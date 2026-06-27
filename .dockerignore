@@ -1,0 +1,10 @@
+**/.git
+**/.github
+**/bin
+**/obj
+**/*.user
+data/
+scripts/
+packaging/
+*.md
+LICENSE
