@@ -12,8 +12,8 @@ public class ProviderIndexCache(string dataDir)
     private string CachePath => Path.Combine(dataDir, "provider-index-cache.json");
 
     private record CacheEntry(
-        [property: JsonPropertyName("ts")]   DateTime   UpdatedUtc,
-        [property: JsonPropertyName("asns")] List<uint> Asns);
+        [property: JsonPropertyName("ts")]   DateTime    UpdatedUtc,
+        [property: JsonPropertyName("asns")] List<uint>? Asns); // nullable: STJ may deserialize "asns":null
 
     // Returns non-expired entries keyed by country code, or null on cache miss / full expiry.
     public async Task<IReadOnlyDictionary<string, IReadOnlyList<uint>>?> LoadAsync(
@@ -29,7 +29,7 @@ public class ProviderIndexCache(string dataDir)
             var result = new Dictionary<string, IReadOnlyList<uint>>();
             foreach (var (cc, entry) in raw)
             {
-                if (DateTime.UtcNow - entry.UpdatedUtc <= Ttl)
+                if (DateTime.UtcNow - entry.UpdatedUtc <= Ttl && entry.Asns != null)
                     result[cc] = entry.Asns;
             }
             return result.Count > 0 ? result : null;
@@ -59,7 +59,10 @@ public class ProviderIndexCache(string dataDir)
             foreach (var (cc, asns) in updates)
                 merged[cc] = new CacheEntry(DateTime.UtcNow, [.. asns]);
 
-            await File.WriteAllTextAsync(CachePath, JsonSerializer.Serialize(merged), ct);
+            // Write to temp file then rename — prevents a corrupt cache if the process is killed mid-write.
+            var tmp = CachePath + ".tmp";
+            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(merged), ct);
+            File.Move(tmp, CachePath, overwrite: true);
         }
         catch { } // best-effort; next run will just re-fetch
     }

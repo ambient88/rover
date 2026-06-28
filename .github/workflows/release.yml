@@ -19,19 +19,19 @@ jobs:
         include:
           - os: ubuntu-latest
             rid: linux-x64
-            artifact: subnetSearch-linux-x64
+            artifact: rover-linux-x64
           - os: ubuntu-latest
             rid: linux-arm64
-            artifact: subnetSearch-linux-arm64
+            artifact: rover-linux-arm64
           - os: windows-latest
             rid: win-x64
-            artifact: subnetSearch-win-x64.exe
+            artifact: rover-win-x64.exe
           - os: macos-latest
             rid: osx-x64
-            artifact: subnetSearch-osx-x64
+            artifact: rover-osx-x64
           - os: macos-latest
             rid: osx-arm64
-            artifact: subnetSearch-osx-arm64
+            artifact: rover-osx-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -78,21 +78,21 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: subnetSearch-linux-x64
+          name: rover-linux-x64
 
       - name: Build .deb
         id: deb
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
-          DEB_NAME="subnetSearch_${VERSION}_amd64.deb"
+          DEB_NAME="rover_${VERSION}_amd64.deb"
           echo "name=${DEB_NAME}" >> "$GITHUB_OUTPUT"
 
           mkdir -p deb-pkg/DEBIAN
           mkdir -p deb-pkg/usr/local/bin
 
-          cp subnetSearch-linux-x64 deb-pkg/usr/local/bin/subnetSearch
-          chmod +x deb-pkg/usr/local/bin/subnetSearch
+          cp rover-linux-x64 deb-pkg/usr/local/bin/rover
+          chmod +x deb-pkg/usr/local/bin/rover
 
           sed "s/VERSION/${VERSION}/" packaging/debian/control > deb-pkg/DEBIAN/control
           cp packaging/debian/postinst deb-pkg/DEBIAN/postinst
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: deb-package
-          path: subnetSearch_*_amd64.deb
+          path: rover_*_amd64.deb
 
   # ── 3. Docker image ──────────────────────────────────────────────────────────
   build-docker:
@@ -153,12 +153,12 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            subnetSearch-linux-x64/subnetSearch-linux-x64
-            subnetSearch-linux-arm64/subnetSearch-linux-arm64
-            subnetSearch-win-x64.exe/subnetSearch-win-x64.exe
-            subnetSearch-osx-x64/subnetSearch-osx-x64
-            subnetSearch-osx-arm64/subnetSearch-osx-arm64
-            deb-package/subnetSearch_*_amd64.deb
+            rover-linux-x64/rover-linux-x64
+            rover-linux-arm64/rover-linux-arm64
+            rover-win-x64.exe/rover-win-x64.exe
+            rover-osx-x64/rover-osx-x64
+            rover-osx-arm64/rover-osx-arm64
+            deb-package/rover_*_amd64.deb
 
   # ── 5. apt repository on GitHub Pages ────────────────────────────────────────
   check-gpg-secrets:
@@ -215,8 +215,8 @@ jobs:
           gzip -kf dists/stable/main/binary-amd64/Packages
 
           cat > /tmp/apt-ftparchive.conf <<EOF
-          APT::FTPArchive::Release::Origin "SubnetSearch";
-          APT::FTPArchive::Release::Label "SubnetSearch";
+          APT::FTPArchive::Release::Origin "rover";
+          APT::FTPArchive::Release::Label "rover";
           APT::FTPArchive::Release::Suite "stable";
           APT::FTPArchive::Release::Codename "stable";
           APT::FTPArchive::Release::Architectures "amd64";

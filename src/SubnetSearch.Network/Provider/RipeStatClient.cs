@@ -58,7 +58,10 @@ public class RipeStatClient
             if (r?.Status != "ok" || r.Data?.Countries == null || r.Data.Countries.Length == 0)
                 return [];
 
-            return r.Data.Countries[0].Routed ?? [];
+            // Match by resource code — RIPE Stat may return entries in arbitrary order.
+            var entry = r.Data.Countries.FirstOrDefault(
+                c => string.Equals(c.Resource, countryCode, StringComparison.OrdinalIgnoreCase));
+            return entry?.Routed ?? [];
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return []; }
@@ -77,7 +80,7 @@ public class RipeStatClient
                 .Select(p => p.Prefix)
                 .Where(p => !string.IsNullOrWhiteSpace(p) && !p.Contains(':'))  // только IPv4
                 .Select(p => p!)
-                .OrderBy(p => p)
+                .OrderBy(CidrToSortKey)
                 .ToList();
         }
         catch { return []; }
@@ -104,7 +107,7 @@ public class RipeStatClient
                 .Where(p => !string.IsNullOrWhiteSpace(p))
                 .Select(p => p!)
                 .ToList();
-            var ipv4 = all.Where(p => !p.Contains(':')).OrderBy(p => p).ToList();
+            var ipv4 = all.Where(p => !p.Contains(':')).OrderBy(CidrToSortKey).ToList();
             var ipv6 = all.Where(p =>  p.Contains(':')).OrderBy(p => p).ToList();
 
             _cache?.Set(cacheKey,
@@ -240,6 +243,19 @@ public class RipeStatClient
             catch { }
         }
         return checked_ > 0 ? (double)valid / checked_ : null;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Numeric sort key for CIDR strings — prevents lex order ("100.x" < "5.x") from
+    // causing ProviderScorer to probe unresponsive network addresses as anchor IPs.
+    private static uint CidrToSortKey(string cidr)
+    {
+        var slash = cidr.IndexOf('/');
+        var ipStr = slash < 0 ? cidr : cidr[..slash];
+        if (!System.Net.IPAddress.TryParse(ipStr, out var addr)) return 0;
+        var b = addr.GetAddressBytes();
+        return (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
     }
 
     // ── Private JSON models ───────────────────────────────────────────────────

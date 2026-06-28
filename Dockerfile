@@ -24,12 +24,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=build /app/publish/SubnetSearch.Cli ./SubnetSearch
-RUN chmod +x ./SubnetSearch
+COPY --from=build /app/publish/SubnetSearch.Cli ./rover
+RUN chmod +x ./rover
 
 # Data files are persisted in a volume so they survive container restarts.
-# Mount a host directory: docker run -v ~/.local/share/SubnetSearch/data:/data ...
+# Mount a host directory: docker run -v ~/.local/share/rover/data:/data ...
 ENV SUBNETSSEARCH_DATA_DIR=/data
 VOLUME ["/data"]
 
-ENTRYPOINT ["./SubnetSearch"]
+ENTRYPOINT ["./rover"]

@@ -37,7 +37,12 @@ public class BgpViewClient(HttpClient http)
             return (ipv4, ipv6);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { return ([], []); } // timeout or parse error — caller falls through
+        catch
+        {
+            // WR-01: on timeout/error, still honour the rate limit before releasing the semaphore.
+            try { await Task.Delay(ThrottleDelayMs, ct); } catch { }
+            return ([], []);
+        }
         finally { _throttle.Release(); }
     }
 

@@ -462,8 +462,13 @@ public class ProviderFinder(
 
         // BGPView fallback: RIPE Stat returned no IPv4 prefixes for this ASN.
         // Throttled to ~42 req/min — only triggered for genuinely missing ASNs.
+        // Preserves any IPv6 data already returned by RIPE Stat.
         if (ipv4.Count == 0 && _bgpView != null)
-            (ipv4, ipv6) = await _bgpView.GetPrefixesAsync(asn, ct);
+        {
+            var (bgpIpv4, bgpIpv6) = await _bgpView.GetPrefixesAsync(asn, ct);
+            ipv4 = bgpIpv4;
+            if (ipv6.Count == 0) ipv6 = bgpIpv6;
+        }
 
         return (ipv4, ipv6);
     }

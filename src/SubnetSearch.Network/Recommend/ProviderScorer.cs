@@ -1,4 +1,5 @@
 using SubnetSearch.Core.Interfaces.Classification;
+using SubnetSearch.Core.Models.Classification;
 using SubnetSearch.Core.Models.Network;
 using SubnetSearch.Core.Utilities;
 using SubnetSearch.Network.Reputation;
@@ -73,7 +74,8 @@ public class ProviderScorer(
                     latencyMs: null, packetLoss: null,
                     candidate.PeeringCount, candidate.Prefixes.Count,
                     abuserScore, ipsumRatio, null, null,
-                    candidate.RpkiScore, candidate.TotalIpCount, weights).Score;
+                    candidate.RpkiScore, candidate.TotalIpCount, weights,
+                    upstreamCount: candidate.UpstreamCount).Score;
 
                 phase1.Add((candidate, prescore, abuserScore, ipsumRatio));
             });
@@ -101,10 +103,23 @@ public class ProviderScorer(
             async (entry, innerCt) =>
             {
                 var (candidate, _, abuserScore, ipsumRatio) = entry;
-                string? anchorIp = GetAnchorIp(candidate.Prefixes[0]);
-                if (anchorIp == null) return;
 
-                var ping = await pingService.PingAsync(anchorIp, count: 3, cancellationToken: innerCt);
+                // Try up to 3 prefixes and use the first that responds to ICMP.
+                // Prefixes are numerically sorted by RipeStatClient, so the first one is the
+                // smallest announced block — but even .1 of that block may not answer ICMP.
+                string? anchorIp = null;
+                PingStats? ping = null;
+                foreach (var prefix in candidate.Prefixes.Take(3))
+                {
+                    var ip = GetAnchorIp(prefix);
+                    if (ip == null) continue;
+                    var probe = await pingService.PingAsync(ip, count: 3, cancellationToken: innerCt);
+                    if (probe == null) continue;
+                    anchorIp = ip;
+                    ping = probe;
+                    break;
+                }
+                if (anchorIp == null) return;
 
                 // TCP RST timing is valid but may hit CDN edge — try traceroute for real DC latency.
                 if (ping?.IsTcp == true && ipIndex != null)
@@ -132,7 +147,8 @@ public class ProviderScorer(
                     latencyMs, packetLoss,
                     candidate.PeeringCount, candidate.Prefixes.Count,
                     abuserScore, ipsumRatio, abuseIpDbScore, greyNoiseRatio,
-                    candidate.RpkiScore, candidate.TotalIpCount, weights);
+                    candidate.RpkiScore, candidate.TotalIpCount, weights,
+                    upstreamCount: candidate.UpstreamCount);
 
                 string? pricingUrl = PricingPageResolver.Resolve(candidate.Asn, candidate.Name);
 
@@ -176,7 +192,8 @@ public class ProviderScorer(
 
     // Scoring thresholds — tune these to adjust how the scoring function maps raw metrics to [0,1].
     private const double LatencyMs_AtZeroScore    = 200.0; // >200ms → score 0 (latency component)
-    private const double PeeringCount_AtMaxScore  = 50.0;  // 50+ peerings → score 1
+    private const double PeeringCount_AtMaxScore  = 50.0;  // 50+ peerings → IX score 1
+    private const double UpstreamCount_AtMaxScore = 8.0;   // 8+ transit providers → upstream score 1
     private const double IpPool_LogScaleDivisor   = 6.0;   // 10^6 = 1M IPs → size score 1
     private const double Prefix_LogScaleDivisor   = 3.0;   // 10^3 = 1K prefixes → size score 1 (fallback)
 
@@ -190,17 +207,25 @@ public class ProviderScorer(
         double? abuseIpDbScore, double? greyNoiseRatio,
         double? rpkiScore,
         long totalIpCount = 0,
-        ScoringWeights? weights = null)
+        ScoringWeights? weights = null,
+        int upstreamCount = 0)
     {
         weights ??= ScoringWeights.Balanced;
 
-        // Latency: 0ms → 1.0, 200ms → 0.0; penalised by packet loss.
-        double ls = latencyMs.HasValue ? Math.Max(0, 1.0 - latencyMs.Value / LatencyMs_AtZeroScore) : 0.0;
+        // Latency: concave decay (quadratic) — slow penalty at low values, steeper above 100ms.
+        // 0ms → 1.00 | 50ms → 0.94 | 100ms → 0.75 | 150ms → 0.44 | 200ms → 0.00
+        double ls = latencyMs.HasValue
+            ? Math.Max(0, 1.0 - Math.Pow(latencyMs.Value / LatencyMs_AtZeroScore, 2.0))
+            : 0.0;
         if (latencyMs.HasValue && packetLoss.HasValue && packetLoss.Value > 0)
             ls *= 1.0 - Math.Min(0.5, packetLoss.Value / 100.0);
 
-        // Peerings: 0 → 0.0, 50+ → 1.0
-        double ps = Math.Min(1.0, (peeringCount ?? 0) / PeeringCount_AtMaxScore);
+        // Peering: 70% IX count (global reach) + 30% upstream count (routing resilience).
+        // Falls back to pure IX count when upstream data is unavailable (upstreamCount == 0).
+        double ixScore = Math.Min(1.0, (peeringCount ?? 0) / PeeringCount_AtMaxScore);
+        double ps = upstreamCount > 0
+            ? 0.7 * ixScore + 0.3 * Math.Min(1.0, upstreamCount / UpstreamCount_AtMaxScore)
+            : ixScore;
 
         // Size: log scale (1K→0.17, 100K→0.83, 1M→1.0). Falls back to prefix count.
         double ss = totalIpCount > 0
