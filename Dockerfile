@@ -24,7 +24,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=build /app/publish/SubnetSearch.Cli ./rover
+COPY --from=build /app/publish/rover ./rover
 RUN chmod +x ./rover
 
 # Data files are persisted in a volume so they survive container restarts.
