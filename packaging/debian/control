@@ -1,10 +1,10 @@
-Package: subnetSearch
+Package: rover
 Version: VERSION
 Architecture: amd64
-Maintainer: greshnik200ready2die <thriilerchiller123@gmail.com>
-Homepage: https://github.com/greshnik200ready2die/SubnetSearch
+Maintainer: ambient88 <thriilerchiller123@gmail.com>
+Homepage: https://github.com/ambient88/rover
 Description: IP address and subnet classification tool
- SubnetSearch classifies IP addresses, domains and CIDR ranges to identify
+ Rover classifies IP addresses, domains and CIDR ranges to identify
  hosting providers, geolocation, reputation, and network diagnostics.
  .
  Features: hosting detection, ASN lookup, geolocation, ping, traceroute,

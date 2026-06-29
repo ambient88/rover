@@ -54,11 +54,11 @@ jobs:
 
       - name: Rename output (Linux / macOS)
         if: runner.os != 'Windows'
-        run: mv ./publish/SubnetSearch.Cli ./${{ matrix.artifact }}
+        run: mv ./publish/rover ./${{ matrix.artifact }}
 
       - name: Rename output (Windows)
         if: runner.os == 'Windows'
-        run: mv ./publish/SubnetSearch.Cli.exe ./${{ matrix.artifact }}
+        run: mv ./publish/rover.exe ./${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:

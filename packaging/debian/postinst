@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 echo ""
-echo "SubnetSearch installed successfully."
+echo "rover installed successfully."
 echo "Data files will be downloaded automatically on first run."
 echo ""
 echo "Usage:"
-echo "  subnetSearch -a <ip>         Classify an IP address"
-echo "  subnetSearch -d <domain>     Classify a domain"
-echo "  subnetSearch -c <CIDR>       Classify a CIDR range"
-echo "  subnetSearch -o <ASN|name>   Scan a provider"
+echo "  rover -a <ip>         Classify an IP address"
+echo "  rover -d <domain>     Classify a domain"
+echo "  rover -c <CIDR>       Classify a CIDR range"
+echo "  rover -o <ASN|name>   Scan a provider"
 echo ""
