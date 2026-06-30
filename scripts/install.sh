@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# SubnetSearch installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/greshnik200ready2die/SubnetSearch/main/scripts/install.sh | bash
+# rover installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/ambient88/rover/main/scripts/install.sh | bash
 
 set -euo pipefail
 
-REPO="greshnik200ready2die/SubnetSearch"
-BINARY_NAME="subnetSearch"
+REPO="ambient88/rover"
+BINARY_NAME="rover"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # ── Detect OS and architecture ────────────────────────────────────────────────
@@ -25,7 +25,7 @@ case "$OS" in
 esac
 
 # ── Fetch latest release download URL ────────────────────────────────────────
-echo "Fetching latest SubnetSearch release..."
+echo "Fetching latest rover release..."
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 DOWNLOAD_URL=$(curl -fsSL "$API_URL" \
     | grep "browser_download_url" \
@@ -55,5 +55,5 @@ else
 fi
 
 echo ""
-echo "SubnetSearch installed: ${INSTALL_DIR}/${BINARY_NAME}"
-echo "Run 'subnetSearch' to get started. Data files are downloaded on first run."
+echo "rover installed: ${INSTALL_DIR}/${BINARY_NAME}"
+echo "Run 'rover' to get started. Data files are downloaded on first run."
