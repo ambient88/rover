@@ -37,11 +37,16 @@ public interface IFileDownloader
         => DownloadAsync(url, new DownloadOptions(), progress, cancellationToken);
 
     // Sends If-None-Match / If-Modified-Since; returns 304 result or new content.
+    // When partialFilePath is provided and the server returns 200, the download is
+    // saved there (not a temp DeleteOnClose file). If the download stalls and the
+    // caller retries, DownloadManager will find the .part file and resume via
+    // DownloadAsync (which sends a Range request) instead of re-issuing a conditional check.
     Task<ConditionalDownloadResult> ConditionalDownloadAsync(
         string url,
         string? etag,
         string? lastModified,
         DownloadOptions options,
         IProgress<DownloadProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? partialFilePath = null);
 }

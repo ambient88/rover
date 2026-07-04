@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "nonHosting": [
+    { "asn": 714,    "org": "Apple Inc.",                       "reason": "consumer electronics, no commercial hosting" },
+    { "asn": 2906,   "org": "Netflix",                          "reason": "streaming service, no commercial hosting" },
+    { "asn": 32934,  "org": "Meta Platforms",                   "reason": "social media, no commercial hosting" },
+    { "asn": 10310,  "org": "Yahoo Inc.",                       "reason": "media/ad company, no commercial CDN or hosting" },
+    { "asn": 6507,   "org": "Riot Games",                       "reason": "game studio, no commercial network service" },
+    { "asn": 14340,  "org": "Salesforce",                       "reason": "SaaS CRM, no commercial CDN or hosting" },
+    { "asn": 19679,  "org": "Dropbox",                          "reason": "SaaS file storage, no commercial network service" },
+    { "asn": 62955,  "org": "eBay",                             "reason": "e-commerce, no commercial hosting or transit" },
+    { "asn": 26415,  "org": "VeriSign Global Registry Services","reason": "DNS registry operator, not a hosting provider" },
+    { "asn": 17685,  "org": "Square Enix",                      "reason": "game studio, no commercial network service" },
+    { "asn": 203724, "org": "Skyhigh Security",                 "reason": "cloud security vendor, no server rental" },
+    { "asn": 39832,  "org": "Opera Software AS",               "reason": "browser/VPN service, no commercial VPS or dedicated hosting" },
+    { "asn": 57976,  "org": "Blizzard Entertainment",           "reason": "game studio; stale ipcat range (ex-PEER 1) put it in the local whitelist" },
+    { "asn": 6939,   "org": "Hurricane Electric",               "reason": "transit/colocation backbone, no VPS or dedicated rental; community vpsh tag is wrong" },
+    { "asn": 8220,   "org": "Colt Technology Services",         "reason": "telecom/enterprise connectivity, not a server rental provider" },
+    { "asn": 15830,  "org": "Equinix",                          "reason": "colocation/IXP operator; Equinix Metal discontinued, no self-serve server rental" },
+    { "asn": 35280,  "org": "F5 Inc. (Volterra)",               "reason": "security/ADC vendor, not a server rental provider" },
+    { "asn": 36692,  "org": "Cisco Umbrella (OpenDNS)",         "reason": "DNS security service, not a hosting provider" },
+    { "asn": 24429,  "org": "Alibaba Cloud CDN",                "reason": "CDN arm of Alibaba; general compute lives on AS45102 which stays eligible" },
+    { "asn": 49544,  "org": "i3D.net",                          "reason": "B2B game infrastructure + bare-metal only, no VPS product — excluded per owner's taxonomy for --type vps/server" }
+  ],
+  "knownAiProviders": [
+    { "asn": 33425,  "org": "CoreWeave, Inc.",                    "note": "GPU-only cloud, no general-purpose VPS" },
+    { "asn": 398090, "org": "Lambda Labs",                        "note": "GPU cloud for AI/ML" },
+    { "asn": 26356,  "org": "Crusoe Energy Systems (Crusoe Cloud)","note": "Sustainable GPU cloud" },
+    { "asn": 399507, "org": "Crusoe Energy Systems (Crusoe Cloud)","note": "Additional ASN" },
+    { "asn": 401405, "org": "Crusoe Energy Systems (Crusoe Cloud)","note": "Additional ASN" },
+    { "asn": 46082,  "org": "Voltage Park, Inc.",                 "note": "GPU cloud, ~24K NVIDIA H100/B200" },
+    { "asn": 401182, "org": "Applied Digital Corporation (APLD)", "note": "AI data center and GPU cloud" },
+    { "asn": 204415, "org": "NexGen Cloud / Hyperstack",          "note": "GPU-as-a-Service platform" },
+    { "asn": 214438, "org": "NexGen Cloud / Hyperstack",          "note": "Additional ASN" },
+    { "asn": 23112,  "org": "Fluidstack",                         "note": "Distributed GPU compute aggregator" },
+    { "asn": 209045, "org": "Genesis Cloud",                      "note": "European GPU cloud" },
+    { "asn": 50489,  "org": "Ori Industries (Ori Cloud)",         "note": "UK AI GPU cloud (Oriedge)" },
+    { "asn": 400494, "org": "Cirrascale Cloud Services",          "note": "AI/ML GPU cloud" },
+    { "asn": 199524, "org": "Gcore",                              "note": "Global GPU cloud with H100/H200 nodes" },
+    { "asn": 202422, "org": "Gcore (Ghost)",                      "note": "Additional ASN, Luxembourg" },
+    { "asn": 59245,  "org": "Gcore",                              "note": "Additional ASN" },
+    { "asn": 198020, "org": "Verda / DataCrunch",                 "note": "European GPU cloud, rebranded from DataCrunch" }
+  ],
+  "knownCdns": [
+    { "asn": 13335,  "org": "Cloudflare",                       "note": "ipapi.is misclassifies as hosting" },
+    { "asn": 20940,  "org": "Akamai Technologies",              "note": "ipapi.is misclassifies as hosting" },
+    { "asn": 54113,  "org": "Fastly" },
+    { "asn": 22822,  "org": "Limelight Networks / Edgio" },
+    { "asn": 60068,  "org": "CDN77" },
+    { "asn": 139341, "org": "ACE CDN" },
+    { "asn": 12041,  "org": "Afilias / Identity Digital",       "note": "TLD registry, not a hosting provider" }
+  ]
+}

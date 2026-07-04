@@ -12,6 +12,8 @@ public class HostingWebsiteResolver : IWebsiteResolver
 
     // Cache holds the full PeeringDB response; website and info_type are extracted from it.
     private readonly ConcurrentDictionary<uint, Lazy<Task<PeeringDbNetworkInfo?>>> _peeringDbCache = new();
+    // IX locations are keyed by PeeringDB net_id (not ASN) but deduplicated the same way.
+    private readonly ConcurrentDictionary<int, Lazy<Task<IReadOnlyList<string>?>>> _ixLocationsCache = new();
 
     private static readonly Dictionary<string, string> ManualOverrides = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -93,6 +95,13 @@ public class HostingWebsiteResolver : IWebsiteResolver
         var info = await GetNetworkInfoFromPeeringDbAsync(asn, cancellationToken);
         if (info?.NetId is not int netId) return null;
 
-        return await _peeringDbResolver.GetIxLocationsAsync(netId, cancellationToken);
+        // Cache per net_id with the same Lazy<Task> deduplication pattern as _peeringDbCache.
+        // Without this, batch classification of a large CIDR in one ASN fires the same
+        // ?netixlan?net_id=... request for every IP in parallel — typically hundreds of times.
+        var lazy = _ixLocationsCache.GetOrAdd(netId,
+            key => new Lazy<Task<IReadOnlyList<string>?>>(
+                () => _peeringDbResolver.GetIxLocationsAsync(key, CancellationToken.None),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        return await lazy.Value;
     }
 }

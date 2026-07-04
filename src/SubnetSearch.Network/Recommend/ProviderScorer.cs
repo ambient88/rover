@@ -63,13 +63,11 @@ public class ProviderScorer(
                 if (candidate.Prefixes.Count == 0) return;
                 if (spamhaus.IsListed(candidate.Asn)) return;
 
-                var abuserScore   = await ipapiIs.GetAbuserScoreAsync(candidate.Asn, innerCt);
+                // abuser_score is only available via IP-level ipapi.is requests (not ASN-level).
+                // Skip ASN-level call here — real abuser_score is fetched in Phase 2 per anchor IP.
+                double? abuserScore = null;
 
-                // Hard-filter: skip providers with very high abuse rate.
-                // In IP-list mode strictAbuseFilter=false — user explicitly wants these providers.
-                if (strictAbuseFilter && abuserScore.HasValue && abuserScore.Value > 0.75) return;
-
-                double ipsumRatio = ComputeIpsumRatio(candidate.Prefixes[0], ipsum);
+                double ipsumRatio = ComputeIpsumRatio(candidate.Prefixes, ipsum);
                 double prescore   = ComputeScore(
                     latencyMs: null, packetLoss: null,
                     candidate.PeeringCount, candidate.Prefixes.Count,
@@ -104,9 +102,30 @@ public class ProviderScorer(
             {
                 var (candidate, _, abuserScore, ipsumRatio) = entry;
 
-                // Try up to 3 prefixes and use the first that responds to ICMP.
-                // Prefixes are numerically sorted by RipeStatClient, so the first one is the
-                // smallest announced block — but even .1 of that block may not answer ICMP.
+                // Get the first usable IP from any prefix — for abuser_score lookup only.
+                // Does NOT require ICMP response; used regardless of whether ping succeeds.
+                string? sampleIp = null;
+                foreach (var prefix in candidate.Prefixes.Take(5))
+                {
+                    sampleIp = GetAnchorIp(prefix);
+                    if (sampleIp != null) break;
+                }
+
+                // Fetch real abuser_score via IP-level ipapi.is request.
+                // abuser_score is absent in ASN-level responses — only available per-IP.
+                if (sampleIp != null)
+                {
+                    var ipInfo = await ipapiIs.GetAsnInfoForIpAsync(sampleIp, innerCt);
+                    // Prefer IP-level score; keep Phase-1 null only when IP query also returns null.
+                    abuserScore = ipInfo.AbuserScore ?? abuserScore;
+                }
+
+                // Hard-filter on now-real abuser_score.
+                // In IP-list mode strictAbuseFilter=false — user explicitly wants these providers.
+                if (strictAbuseFilter && abuserScore.HasValue && abuserScore.Value > 0.75) return;
+
+                // Try up to 3 prefixes for ICMP ping (latency data — optional).
+                // Providers that don't respond to ICMP still appear in results without latency.
                 string? anchorIp = null;
                 PingStats? ping = null;
                 foreach (var prefix in candidate.Prefixes.Take(3))
@@ -119,10 +138,9 @@ public class ProviderScorer(
                     ping = probe;
                     break;
                 }
-                if (anchorIp == null) return;
 
                 // TCP RST timing is valid but may hit CDN edge — try traceroute for real DC latency.
-                if (ping?.IsTcp == true && ipIndex != null)
+                if (ping?.IsTcp == true && anchorIp != null && ipIndex != null)
                 {
                     var trPing = await pingService.PingViaTracerouteAsync(anchorIp, candidate.Asn, ipIndex, innerCt);
                     if (trPing != null) ping = trPing;
@@ -131,8 +149,13 @@ public class ProviderScorer(
                 double? latencyMs  = ping?.AvgMs;
                 double? packetLoss = ping?.PacketLoss;
 
+                // Enforce --max-ping: skip providers that exceed cap or couldn't be pinged at all.
                 if (maxPingMs.HasValue && (latencyMs == null || latencyMs > maxPingMs.Value))
                     return;
+
+                // Use sampleIp as display anchor when no prefix responded to ICMP.
+                anchorIp ??= sampleIp;
+                if (anchorIp == null) return; // no usable prefix at all
 
                 double? abuseIpDbScore = abuseIpDb != null
                     ? await abuseIpDb.GetBlockScoreAsync(candidate.Prefixes[0], innerCt)
@@ -288,18 +311,30 @@ public class ProviderScorer(
         }
     }
 
-    private static double ComputeIpsumRatio(string cidr, IIpReputationChecker ipsum)
+    private static double ComputeIpsumRatio(IReadOnlyList<string> prefixes, IIpReputationChecker ipsum)
     {
+        const int maxSamples = 300;
+        int sampled = 0, flagged = 0;
         try
         {
-            if (!IpConverter.TryParseCidr(cidr, out var start, out var end)) return 0.0;
-            long total   = Math.Min((long)end - start + 1, 50);
-            if (total <= 0) return 0.0;
-            long flagged = 0;
-            for (long ip = start; ip < (long)start + total; ip++)
-                if ((ipsum.Check((uint)ip) ?? 0) > 0) flagged++;
-            return (double)flagged / total;
+            // Distribute samples evenly across all prefixes.
+            // For each prefix sample IPs at a regular stride to cover the full range.
+            int perPrefix = Math.Max(1, maxSamples / Math.Max(1, prefixes.Count));
+            foreach (var cidr in prefixes)
+            {
+                if (sampled >= maxSamples) break;
+                if (!IpConverter.TryParseCidr(cidr, out var start, out var end)) continue;
+                long size = (long)end - start + 1;
+                if (size <= 0) continue;
+                long step = Math.Max(1, size / perPrefix);
+                for (long ip = start; ip <= end && sampled < maxSamples; ip += step)
+                {
+                    if ((ipsum.Check((uint)ip) ?? 0) > 0) flagged++;
+                    sampled++;
+                }
+            }
         }
-        catch { return 0.0; }
+        catch { }
+        return sampled > 0 ? (double)flagged / sampled : 0.0;
     }
 }

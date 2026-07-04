@@ -94,12 +94,13 @@ public static class ClassifierFactory
     public static HttpClient CreatePeeringDbHttpClient(HttpClient? bypassClient = null, string? apiKey = null)
     {
         var client = bypassClient ?? new HttpClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("SubnetSearch/1.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
-            // Strip CR/LF to prevent HTTP header injection via malicious key values.
-            var sanitizedKey = apiKey.Replace("\r", "").Replace("\n", "").Trim();
-            client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Api-Key {sanitizedKey}");
+            // Strip CR/LF and null bytes; use typed API to validate value and overwrite any existing header.
+            var sanitizedKey = apiKey.Replace("\r", "").Replace("\n", "").Replace("\0", "").Trim();
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Api-Key", sanitizedKey);
         }
         return client;
     }

@@ -6,62 +6,53 @@ namespace SubnetSearch.Classification;
 
 public class Ip2AsnLoader
 {
-    public async Task<Ip2AsnRecord[]> LoadAsync(string gzipFilePath)
+    public Task<Ip2AsnRecord[]> LoadAsync(string gzipFilePath)
+        => Task.Run(() => LoadSync(gzipFilePath));
+
+    private static Ip2AsnRecord[] LoadSync(string gzipFilePath)
     {
-        var records = new List<Ip2AsnRecord>();
-        int totalLines = 0;
-        var firstLines = new List<string>();
+        // GZipStream decompresses synchronously regardless of async wrapper.
+        // Reading line-by-line with ReadLineAsync in a tight loop over ~400 K entries
+        // creates 400 K Task allocations for no benefit. Offload the entire parse to
+        // the thread-pool and use synchronous ReadLine throughout.
+        var records = new List<Ip2AsnRecord>(500_000);
+        var firstLines = new List<string>(5);
 
-        await using var fileStream = File.OpenRead(gzipFilePath);
-        await using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
-        using var reader = new StreamReader(gzipStream);
+        using var fileStream = File.OpenRead(gzipFilePath);
+        using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+        using var reader     = new StreamReader(gzipStream, bufferSize: 65_536);
 
-        while (!reader.EndOfStream)
+        string? line;
+        while ((line = reader.ReadLine()) != null)
         {
-            var line = await reader.ReadLineAsync();
-            if (line == null) break;
-            totalLines++;
             if (firstLines.Count < 5) firstLines.Add(line);
-
             if (line.StartsWith('#')) continue;
 
-            // Разделяем по табуляции (TSV)
             var cols = line.Split('\t');
             if (cols.Length < 5) continue;
 
             try
             {
-                // IP-адреса в dotted‑decimal, конвертируем через IpConverter
                 uint startIp = IpConverter.IpToUint(cols[0]);
-                uint endIp = IpConverter.IpToUint(cols[1]);
+                uint endIp   = IpConverter.IpToUint(cols[1]);
 
                 if (uint.TryParse(cols[2], out uint asn))
-                {
-                    string country = cols[3];
-                    string description = cols[4]; // описание — всё, что в пятом столбце
-
                     records.Add(new Ip2AsnRecord
                     {
-                        StartIp = startIp,
-                        EndIp = endIp,
-                        Asn = asn,
-                        Country = country,
-                        Description = description
+                        StartIp     = startIp,
+                        EndIp       = endIp,
+                        Asn         = asn,
+                        Country     = cols[3],
+                        Description = cols[4],
                     });
-                }
             }
-            catch
-            {
-                // Игнорируем строки с ошибками (например, невалидный IP)
-            }
+            catch { }
         }
 
         if (records.Count == 0)
-        {
             throw new InvalidDataException(
                 $"File read but contains no IP2ASN records. " +
                 $"Sample lines:\n{string.Join("\n", firstLines)}");
-        }
 
         return records.ToArray();
     }

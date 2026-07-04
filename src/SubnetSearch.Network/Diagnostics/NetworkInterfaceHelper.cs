@@ -51,12 +51,11 @@ public static class NetworkInterfaceHelper
         var localIp = GetPhysicalIpAddress();
         if (localIp == null) return null;
 
+        // AutomaticDecompression intentionally omitted: binary .gz archives
+        // must be saved byte-for-byte intact; transparent decompression corrupts them.
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
-            AutomaticDecompression = System.Net.DecompressionMethods.GZip
-                                   | System.Net.DecompressionMethods.Deflate
-                                   | System.Net.DecompressionMethods.Brotli,
             ConnectCallback = async (ctx, ct) =>
             {
                 // Wrap with explicit 8s timeout — outer ct doesn't reliably abort

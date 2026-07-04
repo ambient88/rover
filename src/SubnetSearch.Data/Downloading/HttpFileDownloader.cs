@@ -181,7 +181,8 @@ public class HttpFileDownloader : IFileDownloader
         string? lastModified,
         DownloadOptions options,
         IProgress<DownloadProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? partialFilePath = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (!string.IsNullOrEmpty(etag))

@@ -122,9 +122,10 @@ rover -r <region>               Search by IXP region (e.g. Frankfurt, Amsterdam)
 
 | Value | What it returns |
 |-------|----------------|
-| `server` | VPS, dedicated, cloud: all server rental types |
+| `server` | VPS, dedicated, cloud: all server rental types (excludes AI/GPU-only providers) |
 | `cdn` | CDN and content delivery networks (Cloudflare, Akamai, Fastly, CDN77...) |
 | `nsp` | Transit and network service providers |
+| `ai` | AI/GPU-only cloud providers (CoreWeave, Lambda Labs, Crusoe, Voltage Park, Gcore...) |
 
 `vps`, `cloud`, `dedicated`, `hosting` are aliases for `server`; `content` is an alias for `cdn`; `isp`, `transit` are aliases for `nsp`.
 
@@ -211,6 +212,8 @@ rover -r --abuseipdb-key YOUR_KEY --max-ping 100
 | `asn-exclusions.json` | GitHub (this repo) | <1 KB | 14 days |
 
 Stored in `~/.local/share/rover/data` (Linux/macOS) or `%APPDATA%\rover\data` (Windows).
+
+**Optional:** Place a CAIDA AS Classification file at `as-classification.txt.gz` in the data directory to improve Enterprise/Transit network filtering in `-r` mode. The file is available after free registration at [data.caida.org](https://data.caida.org/datasets/as-classification/).
 
 To override the path:
 ```bash

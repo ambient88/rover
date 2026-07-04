@@ -52,4 +52,5 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
-/data/
+/data/*
+!/data/asn-exclusions.json

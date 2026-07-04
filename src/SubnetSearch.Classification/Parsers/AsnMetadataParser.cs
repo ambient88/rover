@@ -34,6 +34,24 @@ public class AsnMetadataParser
         return (hostingAsns, byAsn, byOrg);
     }
 
+    /// <summary>
+    /// Возвращает полную карту asn → категория (hosting/isp/business/education_research/
+    /// government_admin) из as.json. Записи без категории пропускаются.
+    /// Используется AsnTypeResolver'ом как локальная замена ASN-типов ipapi.is.
+    /// </summary>
+    public async Task<Dictionary<uint, string>> LoadCategoriesAsync(string jsonFilePath)
+    {
+        var entries = await LoadAllEntriesAsync(jsonFilePath);
+        var categories = new Dictionary<uint, string>(entries.Count);
+        foreach (var entry in entries)
+        {
+            var cat = entry.Metadata?.Category;
+            if (!string.IsNullOrEmpty(cat))
+                categories.TryAdd(entry.Asn, cat);
+        }
+        return categories;
+    }
+
     private async Task<List<AsMetadataEntry>> LoadAllEntriesAsync(string jsonFilePath)
     {
         if (!File.Exists(jsonFilePath))
