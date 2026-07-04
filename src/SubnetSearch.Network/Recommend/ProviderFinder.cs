@@ -165,7 +165,7 @@ public class ProviderFinder(
                 return t == null && (localHostingWhitelist?.Contains(c.Asn) ?? false);
             })];
             typePreFilterActive = true;
-            onStatus?.Invoke($"Тип ASN (локально): {before} → {top.Count} кандидатов после фильтра hosting");
+            onStatus?.Invoke($"ASN type (local): {before} → {top.Count} candidates after the hosting filter");
         }
 
         // Pre-filter already handled type checking — skip redundant check in EnrichWithPrefixesAsync.
