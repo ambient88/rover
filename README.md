@@ -8,6 +8,7 @@
 
 A CLI tool for classifying IP addresses, domains, and subnets. Identifies hosting providers, geolocation, reputation, network characteristics, and ranks providers worldwide.
 
+![gif](https://raw.githubusercontent.com/ambient88/rover/main/static/images/demo1.gif)
 ---
 
 ## 🚀 Quick Start
