@@ -50,10 +50,46 @@ public static class BgpToolsTagLoader
                     set.Add(asn);
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Повреждённый/недоступный файл → пустое множество, резолвер деградирует мягко.
         }
         return set;
+    }
+
+    // Парсит asn → имя из tag-файла (например vpsh.csv), нужен для vpsh-supplement (D-06):
+    // кандидаты конструируются напрямую из имени bgp.tools, без похода в PeeringDB по одному ASN.
+    // Формат строки: "AS215439,PLAY2GO LTD" — ASN до первой запятой, имя — весь остаток
+    // (запятые внутри имени сохраняются, например "AS1,Foo, Inc."). Строки без запятой или
+    // с пустым именем пропускаются — supplement-кандидату обязательно нужно имя.
+    // Дубликаты ASN: первая запись побеждает (TryAdd).
+    public static async Task<IReadOnlyDictionary<uint, string>> LoadTagWithNamesAsync(string filePath)
+    {
+        var map = new Dictionary<uint, string>();
+        if (!File.Exists(filePath)) return map;
+        try
+        {
+            foreach (var line in await File.ReadAllLinesAsync(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var comma = line.IndexOf(',');
+                if (comma < 0) continue;
+
+                var token = line[..comma].Trim();
+                if (token.StartsWith("AS", StringComparison.OrdinalIgnoreCase))
+                    token = token[2..];
+                if (!uint.TryParse(token, out var asn)) continue;
+
+                var name = line[(comma + 1)..].Trim();
+                if (name.Length == 0) continue;
+
+                map.TryAdd(asn, name);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Повреждённый/недоступный файл → пустой словарь, supplement молча пропускается.
+        }
+        return map;
     }
 }

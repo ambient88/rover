@@ -64,8 +64,14 @@ public class RipeStatCache
     }
 
     public void Set(string key, string data)
+        => Set(key, data, _ttl);
+
+    // Explicit per-entry TTL overload. The store already keeps an absolute
+    // ExpiresAt per entry, so heterogeneous TTLs coexist in one file:
+    // RPKI "forever" (large TTL), ping "minutes", prefix/neighbour 24h default.
+    public void Set(string key, string data, TimeSpan ttl)
     {
-        _store[key] = new CacheEntry(DateTime.UtcNow.Add(_ttl), data);
+        _store[key] = new CacheEntry(DateTime.UtcNow.Add(ttl), data);
         Interlocked.Exchange(ref _dirty, 1);
     }
 

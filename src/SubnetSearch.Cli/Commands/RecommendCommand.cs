@@ -122,6 +122,8 @@ public sealed class RecommendCommand(
         bool aiOnly             = ProviderFinder.ShouldFilterAiOnly(typeFilter);
         IReadOnlyList<(uint Asn, int Count)>? localHostingAsns = null;
 
+        long _scoringPingMs = 0;   // [TEMP-TIMING-PHASE10] scoring+ping elapsed, printed only when ROVER_TIMING=1 (D-01)
+
         await AnsiConsole.Status()
             .StartAsync("Searching...", async ctx =>
             {
@@ -166,6 +168,7 @@ public sealed class RecommendCommand(
                         ctx.Status($"Supplementing {missing.Count} local providers via RIPE Stat...");
                         var extra = await finder.FindByAsnListAsync(
                             missing, infoTypes: null, excludeCdn: needsHostingFilter,
+                            excludeAi: needsAiExclusion,
                             localHostingWhitelist: localWhitelist, ct: ct);
                         candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
                     }
@@ -198,7 +201,7 @@ public sealed class RecommendCommand(
                         if (supplement.Count > 0)
                         {
                             var extra = await finder.FindByAsnListAsync(supplement,
-                                infoTypes: null, excludeCdn: false,
+                                infoTypes: null, excludeCdn: false, excludeAi: needsAiExclusion,
                                 localHostingWhitelist: new HashSet<uint>(supplement.Select(a => a.Asn)), ct: ct);
                             candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
                         }
@@ -227,7 +230,8 @@ public sealed class RecommendCommand(
                     {
                         ctx.Status($"Supplementing {missing.Count} providers from --from list...");
                         var forced = await finder.FindByAsnListAsync(
-                            missing, infoTypes: null, excludeCdn: needsHostingFilter,
+                            missing, infoTypes: infoTypes, excludeCdn: needsHostingFilter,
+                            excludeAi: needsAiExclusion,
                             localHostingWhitelist: null, ct: ct);
                         candidates = [.. candidates.Concat(forced).DistinctBy(c => c.Asn)];
                     }
@@ -321,7 +325,8 @@ public sealed class RecommendCommand(
 
                             ctx.Status($"Enriching {filteredPairs.Count} additional providers from country registry...");
                             var extra = await finder.FindByAsnListAsync(
-                                filteredPairs, infoTypes: null, excludeCdn: needsHostingFilter,
+                                filteredPairs, infoTypes: infoTypes, excludeCdn: needsHostingFilter,
+                                excludeAi: needsAiExclusion,
                                 localHostingWhitelist: localWhitelist2, ct: ct);
 
                             extra = [.. extra.Select(c =>
@@ -332,6 +337,78 @@ public sealed class RecommendCommand(
                             diagnosticAfterRipe  = candidates.Count;
                             diagnosticCandidates = diagnosticAfterRipe;
                         }
+                    }
+                }
+
+                // vpsh supplement (bgp.tools) recovers small VPS hosters absent from PeeringDB
+                // (e.g. PLAY2GO AS215439); names from vpsh.csv, enriched via RIPE only —
+                // per-ASN PeeringDB lookups would hit rate limits (D-06).
+                // Global-only (discretion): vpsh-ASNs have no region binding, so the region
+                // path would be skewed by adding them there. Only vps/server/hosting — dedicated
+                // and cloud are curated-only, and cdn/nsp/ai must not gain hosting candidates.
+                if (isGlobal && typeFilter?.ToLowerInvariant() is "vps" or "server" or "hosting")
+                {
+                    var vpshNames = await BgpToolsTagLoader.LoadTagWithNamesAsync(
+                        Path.Combine(dataDir, BgpToolsTagLoader.FileName("vpsh")));
+                    if (vpshNames.Count > 0)
+                    {
+                        var foundAsns = new HashSet<uint>(candidates.Select(c => c.Asn));
+                        var missingVpsh = vpshNames
+                            .Where(kv => !foundAsns.Contains(kv.Key)
+                                      && !exclusions.NonHostingAsns.Contains(kv.Key)
+                                      && !exclusions.KnownAiProviderAsns.Contains(kv.Key))
+                            .ToList();
+
+                        // Country filter guard: supplement must respect --country like every
+                        // other path (applied after all supplements — see comment above).
+                        if (countryCodes is { Length: > 0 } && missingVpsh.Count > 0)
+                        {
+                            var asnCountryVpsh = new Dictionary<uint, string>();
+                            foreach (var r in ip2asnRecords)
+                                asnCountryVpsh.TryAdd(r.Asn, r.Country);
+
+                            missingVpsh = missingVpsh
+                                .Where(kv => asnCountryVpsh.TryGetValue(kv.Key, out var cc) &&
+                                             countryCodes.Contains(cc, StringComparer.OrdinalIgnoreCase))
+                                .ToList();
+                        }
+
+                        if (missingVpsh.Count > 0)
+                        {
+                            var supplementCandidates = missingVpsh
+                                .Select(kv => new ProviderCandidate(kv.Key, kv.Value, null, null, null, null, null, []))
+                                .ToList();
+
+                            ctx.Status($"Supplementing {supplementCandidates.Count} vpsh-tagged providers via RIPE Stat (slower, expected)...");
+                            var extra = await finder.FindByAsnCandidatesAsync(
+                                supplementCandidates, excludeCdn: needsHostingFilter,
+                                excludeAi: needsAiExclusion,
+                                localHostingWhitelist: null, ct: ct);
+
+                            candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
+                            diagnosticAfterRipe  = candidates.Count;
+                            diagnosticCandidates = diagnosticAfterRipe;
+
+                            AnsiConsole.MarkupLine($"[dim]vpsh supplement: +{extra.Count} providers (bgp.tools)[/]");
+                        }
+                    }
+                }
+
+                // Single choke-point for the vps/dedicated/cloud taxonomy: all discovery paths
+                // (global / region / --from / country-supplement / vpsh-supplement) merge into
+                // `candidates` above. Applied once here so the region path — which alone cannot
+                // distinguish vps from dedicated/cloud — is covered too (locked design).
+                candidates = ProviderFinder.ApplyTaxonomyFilter(
+                    candidates, exclusions.DedicatedOnlyAsns, exclusions.CloudOnlyAsns, typeFilter);
+                if (ProviderFinder.IsVpsFilter(typeFilter) || ProviderFinder.IsDedicatedFilter(typeFilter) ||
+                    ProviderFinder.IsCloudFilter(typeFilter))
+                {
+                    diagnosticCandidates = candidates.Count;
+                    if (candidates.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]No providers matched --type {Markup.Escape(typeFilter!)}.[/]");
+                        return;
                     }
                 }
 
@@ -368,8 +445,10 @@ public sealed class RecommendCommand(
                         .ToHashSet();
                 }
 
+                var _swScoring = System.Diagnostics.Stopwatch.StartNew();                     // [TEMP-TIMING-PHASE10]
                 results = await scorer.ScoreAsync(candidates, maxPingMs, returnTop, pingTopN,
                     weights: weights, pinnedAsns: pinnedAsns, ct: ct);
+                _scoringPingMs = _swScoring.ElapsedMilliseconds;                              // [TEMP-TIMING-PHASE10]
             });
 
         int diagnosticAfterScoring = results.Count;
@@ -388,6 +467,15 @@ public sealed class RecommendCommand(
         {
             AnsiConsole.MarkupLine($"[dim]Candidates after enrichment: {diagnosticAfterRipe} | Results after scoring: {diagnosticAfterScoring}[/]");
         }
+
+        // [TEMP-TIMING-PHASE10] per-phase before-baseline breakdown (D-01, Open Q1); dark unless ROVER_TIMING=1. Stripped in 10-05.
+        if (Environment.GetEnvironmentVariable("ROVER_TIMING") == "1")                                                       // [TEMP-TIMING-PHASE10]
+        {                                                                                                                     // [TEMP-TIMING-PHASE10]
+            AnsiConsole.MarkupLine($"[grey][TIMING] PeeringDB fetch:   {ProviderFinder.TimingPeeringDbMs} ms[/]");           // [TEMP-TIMING-PHASE10]
+            AnsiConsole.MarkupLine($"[grey][TIMING] Phase A prefixes+neighbours: {ProviderFinder.TimingPhaseAMs} ms[/]");    // [TEMP-TIMING-PHASE10]
+            AnsiConsole.MarkupLine($"[grey][TIMING] Phase B RPKI:      {ProviderFinder.TimingPhaseBRpkiMs} ms[/]");          // [TEMP-TIMING-PHASE10]
+            AnsiConsole.MarkupLine($"[grey][TIMING] scoring+ping:      {_scoringPingMs} ms[/]");                             // [TEMP-TIMING-PHASE10]
+        }                                                                                                                     // [TEMP-TIMING-PHASE10]
 
         if (results.Count == 0)
         {

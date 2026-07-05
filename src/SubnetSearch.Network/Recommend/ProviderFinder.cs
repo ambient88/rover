@@ -39,6 +39,13 @@ public class ProviderFinder(
     private readonly IReadOnlyDictionary<uint, string>? _caida = caidaClassifications;
     private readonly IReadOnlyDictionary<uint, string>? _asnTypes = asnTypes;
 
+    // [TEMP-TIMING-PHASE10] env-gated per-phase timing accumulators (D-01, Open Q1). Accumulate across
+    // every enrichment call in a run (main + supplements); printed by RecommendCommand only when
+    // ROVER_TIMING=1. Plan 10-05 strips every line tagged with this marker.
+    public static long TimingPeeringDbMs;   // [TEMP-TIMING-PHASE10]
+    public static long TimingPhaseAMs;      // [TEMP-TIMING-PHASE10]
+    public static long TimingPhaseBRpkiMs;  // [TEMP-TIMING-PHASE10]
+
     private string? LookupAsnType(uint asn)
         => _asnTypes != null && _asnTypes.TryGetValue(asn, out var t) ? t : null;
 
@@ -74,8 +81,51 @@ public class ProviderFinder(
     public static bool ShouldExcludeAi(string? typeFilter) =>
         typeFilter?.ToLowerInvariant() is "server" or "hosting" or "vps" or "dedicated" or "cloud";
 
+    // True only for the --type vps alias. Selects the "virtual servers" post-filter
+    // (drop curated dedicated-only ASNs). vps/dedicated share PeeringDB info_types —
+    // the split is applied on candidates, not on info_type (D-02/D-03).
+    public static bool IsVpsFilter(string? typeFilter) =>
+        typeFilter?.ToLowerInvariant() is "vps";
+
+    // True only for the --type dedicated alias. Selects the "bare-metal only" post-filter
+    // (keep only curated dedicated-only ASNs).
+    public static bool IsDedicatedFilter(string? typeFilter) =>
+        typeFilter?.ToLowerInvariant() is "dedicated";
+
+    // True only for the --type cloud alias. Selects the "hyperscalers only" post-filter
+    // (keep only curated cloud-only ASNs). D-05: cloud is its own curated subtype, no longer
+    // an alias of server/hosting.
+    public static bool IsCloudFilter(string? typeFilter) =>
+        typeFilter?.ToLowerInvariant() is "cloud";
+
+    // Pure post-filter for the vps / dedicated / cloud taxonomy (no I/O — covered offline):
+    //   --type dedicated → keep ONLY candidates whose Asn is in the curated dedicated-only set;
+    //   --type cloud     → keep ONLY candidates whose Asn is in the curated cloud-only set;
+    //   --type vps       → drop candidates in EITHER curated set (VPS by default, D-02/D-05);
+    //   otherwise (server/hosting/cdn/nsp/ai/null) → return the input unchanged (union, D-05).
+    // Reference cases: i3D (AS49544) absent under vps, present under dedicated and server;
+    // AWS (AS16509) absent under vps, present under cloud and server;
+    // PLAY2GO (AS215439, unmarked) present under vps and server (D-06).
+    public static IReadOnlyList<ProviderCandidate> ApplyTaxonomyFilter(
+        IReadOnlyList<ProviderCandidate> candidates,
+        IReadOnlySet<uint> dedicatedOnlyAsns,
+        IReadOnlySet<uint> cloudOnlyAsns,
+        string? typeFilter)
+    {
+        if (IsDedicatedFilter(typeFilter))
+            return [.. candidates.Where(c => dedicatedOnlyAsns.Contains(c.Asn))];
+        if (IsCloudFilter(typeFilter))
+            return [.. candidates.Where(c => cloudOnlyAsns.Contains(c.Asn))];
+        if (IsVpsFilter(typeFilter))
+            return [.. candidates.Where(c => !dedicatedOnlyAsns.Contains(c.Asn) && !cloudOnlyAsns.Contains(c.Asn))];
+        return candidates;
+    }
+
     public const string ValidTypeValues =
-        "server                        — all server rental (VPS, dedicated, cloud) [aliases: hosting, vps, dedicated, cloud]\n" +
+        "server                        — all server rental: VPS ∪ dedicated ∪ cloud [alias: hosting]\n" +
+        "                         vps              — virtual servers only (excludes curated dedicated-only and cloud-only providers)\n" +
+        "                         dedicated        — bare-metal / dedicated-only providers (curated list)\n" +
+        "                         cloud            — hyperscalers only (AWS, Azure, GCP, ... — curated list)\n" +
         "                         cdn / content    — CDN and content networks\n" +
         "                         nsp / isp / transit  — Network service providers\n" +
         "                         ai               — AI/GPU-only cloud providers (CoreWeave, Lambda, Crusoe, etc.)";
@@ -83,6 +133,23 @@ public class ProviderFinder(
     private bool IsNonHostingProvider(ProviderCandidate c) => _excl.NonHostingAsns.Contains(c.Asn);
     private bool IsCdnProvider(ProviderCandidate c)        => _excl.KnownCdnAsns.Contains(c.Asn);
     private bool IsAiProvider(ProviderCandidate c)         => _excl.KnownAiProviderAsns.Contains(c.Asn);
+
+    // Pure decision for a candidate whose local ASN type is neither "hosting" nor "cloud"
+    // (no I/O — fully testable). CAIDA and NSP checks apply REGARDLESS of the local IP-range
+    // whitelist (ipcat/cloud-provider/server-ip datasets flag "this address block sits in a
+    // datacenter", not "this org sells retail VPS/dedicated servers" — a wholesale transit
+    // carrier's own infrastructure runs through datacenters too). Before this rule, whitelist
+    // membership alone let large NSP-classified carriers through unconditionally: Hurricane
+    // Electric, Colt, Equinix, M247, DataBank all slipped past as "vps" this way. Whitelist
+    // only grants benefit of doubt as the last, weakest check (small/unclassified Content nets).
+    public static bool ShouldIncludeUnverifiedHostingCandidate(
+        string? infoType, string? caidaClassification, bool inWhitelist,
+        long totalIpCount, bool strictContentFilter)
+    {
+        if (caidaClassification is "Enterprise" or "Transit/Access") return false;
+        if (string.Equals(infoType, "NSP", StringComparison.OrdinalIgnoreCase)) return false;
+        return inWhitelist || (!strictContentFilter && totalIpCount >= 1024);
+    }
 
     // Global search: fetches all hosting/content networks from PeeringDB directly.
     // Returns top candidates sorted by peering count, enriched with prefixes.
@@ -105,8 +172,10 @@ public class ProviderFinder(
         // Requests are sequential to avoid triggering PeeringDB rate limits from parallel bursts.
         var types   = infoTypes ?? ["Content", "NSP"];
         var fetches = new List<(IReadOnlyList<ProviderCandidate> Candidates, string? Error)>();
+        var _swPeeringDb = System.Diagnostics.Stopwatch.StartNew();                              // [TEMP-TIMING-PHASE10]
         foreach (var t in types)
             fetches.Add(await FetchNetsByTypeAsync(t, ct, onStatus));
+        System.Threading.Interlocked.Add(ref TimingPeeringDbMs, _swPeeringDb.ElapsedMilliseconds); // [TEMP-TIMING-PHASE10]
 
         var perType = types.Zip(fetches).ToDictionary(p => p.First, p => p.Second.Candidates.Count);
         var errors  = fetches.Select(f => f.Error).OfType<string>().ToList();
@@ -150,7 +219,6 @@ public class ProviderFinder(
         // Non-whitelist ASNs → must have explicit "hosting" type; null/other → rejected.
         // The type map is local (as.json + bgp.tools tags), so there is no outage fallback:
         // when the map is absent entirely, EnrichWithPrefixesAsync applies balanced filtering.
-        bool typePreFilterActive = false;
         if (excludeCdn && _asnTypes != null)
         {
             int before = top.Count;
@@ -164,14 +232,16 @@ public class ProviderFinder(
                 // не-hosting вердикт всегда сильнее whitelist.
                 return t == null && (localHostingWhitelist?.Contains(c.Asn) ?? false);
             })];
-            typePreFilterActive = true;
             onStatus?.Invoke($"ASN type (local): {before} → {top.Count} candidates after the hosting filter");
         }
 
-        // Pre-filter already handled type checking — skip redundant check in EnrichWithPrefixesAsync.
-        // If no local type map is available, use balanced filter as fallback.
+        // The local-type pre-filter above is cheap triage to cut RIPE Stat calls; it is NOT a
+        // substitute for the full check below (it has no CAIDA/NSP/size-threshold logic), so
+        // filterHostingOnly always runs regardless of whether the pre-filter ran. Passing whitelist
+        // membership through both stages let large NSP carriers with no positive hosting signal
+        // (Hurricane Electric, Colt, Equinix, M247, DataBank) slip through this path only.
         return await EnrichWithPrefixesAsync(top, ct,
-            filterHostingOnly: !typePreFilterActive && excludeCdn,
+            filterHostingOnly: excludeCdn,
             localHostingWhitelist: localHostingWhitelist,
             strictContentFilter: false);
     }
@@ -434,12 +504,14 @@ public class ProviderFinder(
         IReadOnlyList<ProviderCandidate> candidates, CancellationToken ct,
         bool filterHostingOnly = false,
         HashSet<uint>? localHostingWhitelist = null,
-        bool strictContentFilter = false)
+        bool strictContentFilter = false,
+        bool excludeAi = false)
     {
         var withPrefixes = new System.Collections.Concurrent.ConcurrentBag<ProviderCandidate>();
 
         // Phase A: RIPE prefixes + neighbours run simultaneously per candidate.
         // ASN type check is a local map lookup (as.json + bgp.tools) — no network call.
+        var _swPhaseA = System.Diagnostics.Stopwatch.StartNew();                                   // [TEMP-TIMING-PHASE10]
         await Parallel.ForEachAsync(candidates,
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
@@ -472,6 +544,12 @@ public class ProviderFinder(
                 // Hard block: non-hosting companies (Apple, Netflix, Meta) never appear in results.
                 if (IsNonHostingProvider(candidate)) return;
 
+                // Hard block: AI/GPU-only cloud providers (CoreWeave, Lambda, Crusoe, etc.) are
+                // never included when --type excludes AI (server/vps/dedicated/cloud) — this must
+                // apply regardless of candidate origin (PeeringDB match, RIPE overview fallback,
+                // or supplement paths like bgp.tools vpsh) since all of them funnel through here.
+                if (excludeAi && IsAiProvider(candidate)) return;
+
                 // Hard block: government bodies, research/education networks, IXPs and
                 // undisclosed networks are never commercial hosting providers.
                 if (candidate.InfoType?.ToLowerInvariant() is
@@ -492,29 +570,14 @@ public class ProviderFinder(
                                    "education" or "inactive" or "business" or "personal")
                         return;
 
-                    bool inWhitelist = localHostingWhitelist?.Contains(candidate.Asn) ?? false;
-
                     // asnType is null here (or "hosting"/"cloud" which always passes).
-                    if (!inWhitelist && asnType is not ("hosting" or "cloud"))
+                    if (asnType is not ("hosting" or "cloud"))
                     {
-                        // CAIDA AS classification: Enterprise = corporate network (not hosting),
-                        // Transit/Access = ISP/transit — conservative rejection for unknowns.
-                        if (_caida?.TryGetValue(candidate.Asn, out var caidaCls) == true &&
-                            caidaCls is "Enterprise" or "Transit/Access")
+                        bool inWhitelist = localHostingWhitelist?.Contains(candidate.Asn) ?? false;
+                        var caidaCls = _caida?.TryGetValue(candidate.Asn, out var cls) == true ? cls : null;
+                        if (!ShouldIncludeUnverifiedHostingCandidate(
+                                candidate.InfoType, caidaCls, inWhitelist, totalIps, strictContentFilter))
                             return;
-
-                        bool isNsp = string.Equals(candidate.InfoType, "NSP",
-                            StringComparison.OrdinalIgnoreCase);
-
-                        // NSP without a positive hosting signal → reject (ISPs dominate NSP).
-                        if (isNsp) return;
-
-                        // Content with unknown type:
-                        // Strict mode (PeeringDB global, no local whitelist):
-                        //   no benefit of doubt — blocks Sony, Meta, registries, etc.
-                        // Lenient mode (local-whitelist path):
-                        //   allow ≥1024 IPs (benefit of doubt for real providers).
-                        if (strictContentFilter || totalIps < 1024) return;
                     }
                 }
                 withPrefixes.Add(candidate with {
@@ -525,9 +588,11 @@ public class ProviderFinder(
                     UpstreamCount   = upstream,
                 });
             });
+        System.Threading.Interlocked.Add(ref TimingPhaseAMs, _swPhaseA.ElapsedMilliseconds);       // [TEMP-TIMING-PHASE10]
 
         // Phase B: RPKI — sample first prefix only to limit RIPE Stat load.
         var results = new System.Collections.Concurrent.ConcurrentBag<ProviderCandidate>();
+        var _swPhaseB = System.Diagnostics.Stopwatch.StartNew();                                   // [TEMP-TIMING-PHASE10]
         await Parallel.ForEachAsync(withPrefixes,
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
@@ -548,6 +613,7 @@ public class ProviderFinder(
                 }
                 finally { if (acquired) _ripeSemaphore.Release(); }
             });
+        System.Threading.Interlocked.Add(ref TimingPhaseBRpkiMs, _swPhaseB.ElapsedMilliseconds);    // [TEMP-TIMING-PHASE10]
 
         return [.. results];
     }
@@ -612,6 +678,7 @@ public class ProviderFinder(
         IReadOnlyList<(uint Asn, int Coverage)> asnList,
         string[]? infoTypes = null,
         bool excludeCdn = false,
+        bool excludeAi = false,
         HashSet<uint>? localHostingWhitelist = null,
         Action<string>? onError = null,
         Action<int, int, int>? onDiagnostic = null, // (inputCount, afterIpapiFilter, sentToPeeringDb)
@@ -715,8 +782,21 @@ public class ProviderFinder(
         onDiagnostic?.Invoke(asnList.Count, enrichList.Count, peeringDbList.Count);
 
         return await EnrichWithPrefixesAsync([.. candidates], ct,
-            filterHostingOnly: excludeCdn, localHostingWhitelist: localHostingWhitelist);
+            filterHostingOnly: excludeCdn, localHostingWhitelist: localHostingWhitelist,
+            excludeAi: excludeAi);
     }
+
+    // Supplement path for pre-built candidates (bgp.tools vpsh, D-06): reuses the RIPE enrich
+    // pipeline with all hard blocks (nonHosting, CDN, prefix checks) — exclusions cannot be
+    // bypassed; no per-ASN PeeringDB calls (rate limits). Candidates are already constructed by
+    // the caller (e.g. from BgpToolsTagLoader.LoadTagWithNamesAsync) — this is a thin wrapper.
+    public async Task<IReadOnlyList<ProviderCandidate>> FindByAsnCandidatesAsync(
+        IReadOnlyList<ProviderCandidate> candidates, bool excludeCdn,
+        bool excludeAi = false,
+        HashSet<uint>? localHostingWhitelist = null, CancellationToken ct = default)
+        => await EnrichWithPrefixesAsync(candidates, ct,
+            filterHostingOnly: excludeCdn, localHostingWhitelist: localHostingWhitelist,
+            strictContentFilter: false, excludeAi: excludeAi);
 
     private static ProviderCandidate? ParseNetwork(JsonElement net, bool requireInfoType = true)
     {

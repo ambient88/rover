@@ -17,9 +17,13 @@ public static class HelpText
         AnsiConsole.MarkupLine("  -r                   Find and rank hosting providers worldwide");
         AnsiConsole.MarkupLine("  -r <region>          Search by IXP region (e.g. Frankfurt, Amsterdam)");
         AnsiConsole.MarkupLine("  --type <type>        Filter by provider type:");
-        AnsiConsole.MarkupLine("                         server          — all server rental: VPS, dedicated, cloud  [[aliases: hosting, vps, dedicated, cloud]]");
+        AnsiConsole.MarkupLine("                         server          — all server rental, umbrella = vps + dedicated + cloud  [[alias: hosting]]");
+        AnsiConsole.MarkupLine("                         vps             — virtual servers only (excludes bare-metal-only and cloud-only providers)");
+        AnsiConsole.MarkupLine("                         dedicated       — bare-metal / dedicated servers only (curated list in data/asn-exclusions.json)");
+        AnsiConsole.MarkupLine("                         cloud           — hyperscalers only (AWS, Azure, GCP, ... — curated list in data/asn-exclusions.json)");
         AnsiConsole.MarkupLine("                         cdn / content   — CDN and content networks");
         AnsiConsole.MarkupLine("                         nsp / isp / transit  — Network service providers");
+        AnsiConsole.MarkupLine("                         ai              — AI/GPU-only cloud providers (CoreWeave, Lambda, Crusoe, etc.)");
         AnsiConsole.MarkupLine("  --max-ping <ms>      Filter by maximum latency");
         AnsiConsole.MarkupLine("  --country <CC>       Filter by country code — comma-separated for multiple (e.g. DE,NL,FI)");
         AnsiConsole.MarkupLine("  --top <N>            How many results to return (default: 20)");

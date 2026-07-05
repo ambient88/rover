@@ -33,24 +33,33 @@ public partial class PingService : IPingService
             Uri.CheckHostName(host) == UriHostNameType.Unknown)
             throw new ArgumentException($"Invalid host: '{host}'");
 
-        string? iface = NetworkInterfaceHelper.GetPhysicalInterfaceName();
+        string? iface  = NetworkInterfaceHelper.GetPhysicalInterfaceName();
+        string? physIp = NetworkInterfaceHelper.GetPhysicalIpAddress()?.ToString();
 
-        string cmd, args;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            cmd  = "ping";
-            args = $"-n {count} -w 3000 {host}";
-        }
-        else
-        {
-            cmd  = "ping";
-            // -I <iface> binds to the physical interface, bypassing VPN routing
-            string ifaceArg = iface != null ? $"-I {iface} " : "";
-            args = $"-c {count} -W 3 {ifaceArg}{host}";
-        }
+        bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        string args = BuildPingArguments(host, count, isWindows, physIp, iface);
 
-        string output = await RunAsync(cmd, args, cancellationToken);
+        string output = await RunAsync("ping", args, cancellationToken);
         return Parse(output);
+    }
+
+    // Both branches bind ICMP to the physical interface, bypassing VPN routing:
+    //   Windows: -S <source IP>. Without it some VPN clients short-circuit ICMP with
+    //   fake replies (<1ms, TTL=128) for ANY destination — proven 2026-07-04
+    //   (8.8.8.8 via VPN route = 0ms/TTL 128; via -S physical = 25ms/TTL 110),
+    //   which poisons all latency scoring in -r.
+    //   Linux/macOS: -I <iface> (same bypass, pre-existing behavior).
+    internal static string BuildPingArguments(
+        string host, int count, bool isWindows,
+        string? physicalSourceIp, string? physicalInterfaceName)
+    {
+        if (isWindows)
+        {
+            string srcArg = physicalSourceIp != null ? $"-S {physicalSourceIp} " : "";
+            return $"-n {count} -w 1000 {srcArg}{host}";
+        }
+        string ifaceArg = physicalInterfaceName != null ? $"-I {physicalInterfaceName} " : "";
+        return $"-c {count} -W 1 {ifaceArg}{host}";
     }
 
     private PingStats? Parse(string output)
