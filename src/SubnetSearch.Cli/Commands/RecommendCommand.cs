@@ -90,6 +90,14 @@ public sealed class RecommendCommand(
         var bgpToolsTags     = await BgpToolsTagLoader.LoadAllAsync(dataDir);
         var asnTypes         = AsnTypeResolver.Build(bgpToolsTags, asJsonCategories);
 
+        // Allowlist-модель server-фильтров (спека 2026-07-08, pure-allowlist ревизия):
+        // членство в --type vps/dedicated/cloud/server даёт ТОЛЬКО курируемое ядро
+        // server-providers.json (+ .local.json override). Авто-гейт по vpsh-тегу убран —
+        // ничего не проходит автоматически, только проверенные арендуемые провайдеры.
+        var serverProviders = await ServerProviders.LoadAsync(
+                                  Path.Combine(dataDir, "server-providers.json"),
+                                  Path.Combine(dataDir, "server-providers.local.json"));
+
         var bgpView    = new BgpViewClient(peeringDbHttp);
         var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache);
         var pingSvc    = new PingService();
@@ -372,68 +380,13 @@ public sealed class RecommendCommand(
                     }
                 }
 
-                // vpsh supplement (bgp.tools) recovers small VPS hosters absent from PeeringDB
-                // (e.g. PLAY2GO AS215439); names from vpsh.csv, enriched via RIPE only —
-                // per-ASN PeeringDB lookups would hit rate limits (D-06).
-                // Global-only (discretion): vpsh-ASNs have no region binding, so the region
-                // path would be skewed by adding them there. Only vps/server/hosting — dedicated
-                // and cloud are curated-only, and cdn/nsp/ai must not gain hosting candidates.
-                if (isGlobal && typeFilter?.ToLowerInvariant() is "vps" or "server" or "hosting")
-                {
-                    var vpshNames = await BgpToolsTagLoader.LoadTagWithNamesAsync(
-                        Path.Combine(dataDir, BgpToolsTagLoader.FileName("vpsh")));
-                    if (vpshNames.Count > 0)
-                    {
-                        var foundAsns = new HashSet<uint>(candidates.Select(c => c.Asn));
-                        var missingVpsh = vpshNames
-                            .Where(kv => !foundAsns.Contains(kv.Key)
-                                      && !exclusions.NonHostingAsns.Contains(kv.Key)
-                                      && !exclusions.KnownAiProviderAsns.Contains(kv.Key))
-                            .ToList();
-
-                        // Country filter guard: supplement must respect --country like every
-                        // other path (applied after all supplements — see comment above).
-                        if (countryCodes is { Length: > 0 } && missingVpsh.Count > 0)
-                        {
-                            var asnCountryVpsh = new Dictionary<uint, string>();
-                            foreach (var r in ip2asnRecords)
-                                asnCountryVpsh.TryAdd(r.Asn, r.Country);
-
-                            missingVpsh = missingVpsh
-                                .Where(kv => asnCountryVpsh.TryGetValue(kv.Key, out var cc) &&
-                                             countryCodes.Contains(cc, StringComparer.OrdinalIgnoreCase))
-                                .ToList();
-                        }
-
-                        if (missingVpsh.Count > 0)
-                        {
-                            var supplementCandidates = missingVpsh
-                                .Select(kv => new ProviderCandidate(kv.Key, kv.Value, null, null, null, null, null, []))
-                                .ToList();
-
-                            ctx.Status($"Supplementing {supplementCandidates.Count} vpsh-tagged providers via RIPE Stat (slower, expected)...");
-                            var extra = await finder.FindByAsnCandidatesAsync(
-                                supplementCandidates, excludeCdn: needsHostingFilter,
-                                excludeAi: needsAiExclusion,
-                                localHostingWhitelist: null, ct: ct);
-
-                            candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
-                            diagnosticAfterRipe  = candidates.Count;
-                            diagnosticCandidates = diagnosticAfterRipe;
-
-                            AnsiConsole.MarkupLine($"[dim]vpsh supplement: +{extra.Count} providers (bgp.tools)[/]");
-                        }
-                    }
-                }
-
-                // Single choke-point for the vps/dedicated/cloud taxonomy: all discovery paths
-                // (global / region / --from / country-supplement / vpsh-supplement) merge into
-                // `candidates` above. Applied once here so the region path — which alone cannot
-                // distinguish vps from dedicated/cloud — is covered too (locked design).
-                candidates = ProviderFinder.ApplyTaxonomyFilter(
-                    candidates, exclusions.DedicatedOnlyAsns, exclusions.CloudOnlyAsns, typeFilter);
-                if (ProviderFinder.IsVpsFilter(typeFilter) || ProviderFinder.IsDedicatedFilter(typeFilter) ||
-                    ProviderFinder.IsCloudFilter(typeFilter))
+                // Single choke-point for the vps/dedicated/cloud/server allowlist: all discovery
+                // paths (global / region / --from / country-supplement) merge into `candidates`
+                // above. Applied once here so the region path — which alone cannot distinguish
+                // vps from dedicated/cloud — is covered too (pure allowlist: только ядро).
+                candidates = ProviderFinder.ApplyServerAllowlist(
+                    candidates, typeFilter, serverProviders);
+                if (ProviderFinder.IsServerTypeFilter(typeFilter))
                 {
                     diagnosticCandidates = candidates.Count;
                     if (candidates.Count == 0)

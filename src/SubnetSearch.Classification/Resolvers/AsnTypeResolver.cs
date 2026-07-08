@@ -8,13 +8,17 @@ namespace SubnetSearch.Classification;
 // Приоритет правил (выше = сильнее), выверен на реальных конфликтах данных:
 //   1. as.json isp/government_admin/education_research — сильный негатив, бьёт vpsh-тег.
 //      (Кейс CG-Net AS16247: устаревший vpsh-тег на B2B-провайдере; as.json говорит isp.)
-//   2. bgp.tools vpsh → hosting. Бьёт cdn-тег: OVH/AWS/Google несут оба тега (cdn∩vpsh=39),
+//   2. bgp.tools dsl/mobile/satnet → isp. Бьёт vpsh: противоречащий тег доступа сильнее
+//      устаревшего vpsh-тега. (Кейс Wavenet AS5413: vpsh+dsl+corp+biznet → isp. ~143
+//      access-ISP со случайным vpsh-тегом — China Telecom, Cox, Bell, Telia — так корректно
+//      уходят из выдачи хостинга.)
+//   3. bgp.tools vpsh → hosting. Бьёт cdn-тег: OVH/AWS/Google несут оба тега (cdn∩vpsh=39),
 //      и cdn-приоритет выбросил бы крупнейшие облака.
-//   3. bgp.tools cdn → cdn. (Кейс Blizzard AS57976: as.json ошибочно даёт hosting,
+//   4. bgp.tools cdn → cdn. (Кейс Blizzard AS57976: as.json ошибочно даёт hosting,
 //      cdn-тег без vpsh корректно выводит его из выдачи хостинга.)
-//   4. bgp.tools gov/uni/perso/event → government/education/personal/business.
-//   5. bgp.tools dsl/mobile/satnet → isp.
-//   6. bgp.tools corp/biznet → business.
+//   5. bgp.tools gov/uni/perso/event → government/education/personal/business.
+//   6. bgp.tools corp/biznet → business. Остаётся НИЖЕ vpsh: тег шумный (хостер может
+//      обслуживать бизнес), и для реальных кейсов достаточно тега доступа.
 //   7. Категория as.json business → business.
 //      ВАЖНО: as.json "hosting" НЕ даёт позитивный вердикт — категория слишком щедрая
 //      (12k+ ASN, включая F5, Cisco Umbrella, Hurricane Electric, Blizzard). Позитив
@@ -53,13 +57,13 @@ public static class AsnTypeResolver
                 _ => null,
             };
 
-            type ??= vpsh.Contains(asn) ? "hosting"
+            type ??= (dsl.Contains(asn) || mobile.Contains(asn) || satnet.Contains(asn)) ? "isp"
+                   : vpsh.Contains(asn) ? "hosting"
                    : cdn.Contains(asn) ? "cdn"
                    : gov.Contains(asn) ? "government"
                    : uni.Contains(asn) ? "education"
                    : perso.Contains(asn) ? "personal"
                    : evnt.Contains(asn) ? "business"
-                   : (dsl.Contains(asn) || mobile.Contains(asn) || satnet.Contains(asn)) ? "isp"
                    : (corp.Contains(asn) || biznet.Contains(asn)) ? "business"
                    : cat switch
                    {

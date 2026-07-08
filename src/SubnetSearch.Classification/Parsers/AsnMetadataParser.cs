@@ -3,6 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace SubnetSearch.Classification;
 
+/// <summary>Профиль сети из as.json для gate long-tail: транзитная роль + охват (reach).</summary>
+public readonly record struct AsnNetworkProfile(string? NetworkRole, long Reach);
+
 public class AsnMetadataParser
 {
     /// <summary>
@@ -52,6 +55,24 @@ public class AsnMetadataParser
         return categories;
     }
 
+    /// <summary>
+    /// Карта asn → (networkRole, reach) из as.json — питает локальный gate long-tail
+    /// (транзитные роли и большой reach = карьер, не арендуемый провайдер). reach=0 при
+    /// отсутствии stats.
+    /// </summary>
+    public async Task<Dictionary<uint, AsnNetworkProfile>> LoadNetworkProfilesAsync(string jsonFilePath)
+    {
+        var entries = await LoadAllEntriesAsync(jsonFilePath);
+        var map = new Dictionary<uint, AsnNetworkProfile>(entries.Count);
+        foreach (var entry in entries)
+        {
+            var role  = entry.Metadata?.NetworkRole;
+            var reach = entry.Stats?.Connectivity?.Reach ?? 0;
+            map[entry.Asn] = new AsnNetworkProfile(role, reach);
+        }
+        return map;
+    }
+
     private async Task<List<AsMetadataEntry>> LoadAllEntriesAsync(string jsonFilePath)
     {
         if (!File.Exists(jsonFilePath))
@@ -65,10 +86,20 @@ public class AsnMetadataParser
         [property: JsonPropertyName("asn")]          uint        Asn,
         [property: JsonPropertyName("website")]      string?     Website,
         [property: JsonPropertyName("organization")] string?     Organization,
-        [property: JsonPropertyName("metadata")]     AsMetadata? Metadata
+        [property: JsonPropertyName("metadata")]     AsMetadata? Metadata,
+        [property: JsonPropertyName("stats")]        AsStats?    Stats
     );
 
     private record AsMetadata(
-        [property: JsonPropertyName("category")] string? Category
+        [property: JsonPropertyName("category")]    string? Category,
+        [property: JsonPropertyName("networkRole")] string? NetworkRole
+    );
+
+    private record AsStats(
+        [property: JsonPropertyName("connectivity")] AsConnectivity? Connectivity
+    );
+
+    private record AsConnectivity(
+        [property: JsonPropertyName("reach")] long Reach
     );
 }

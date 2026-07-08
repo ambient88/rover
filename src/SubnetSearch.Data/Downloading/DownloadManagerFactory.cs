@@ -64,6 +64,7 @@ public static class DownloadManagerFactory
             new(dbIpUrl,                                                                                                              "dbip-city.mmdb.gz",               5_000_000,  TimeSpan.FromDays(30)),
             new("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt",                                                 "ipsum.txt",                       100_000,    TimeSpan.FromDays(3)),
             new("https://raw.githubusercontent.com/ambient88/rover/main/data/asn-exclusions.json",                                    "asn-exclusions.json",             500,        TimeSpan.FromDays(14)),
+            new("https://raw.githubusercontent.com/ambient88/rover/main/data/server-providers.json",                                  "server-providers.json",           500,        TimeSpan.FromDays(14)),
             //new("https://bgp.tools/asns.csv", "bgptools-asns.csv", 100_000, TimeSpan.FromDays(7)),
         };
 

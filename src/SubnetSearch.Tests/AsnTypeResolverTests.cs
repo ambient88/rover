@@ -116,4 +116,44 @@ public class AsnTypeResolverTests
 
         map.Should().BeEmpty();
     }
+
+    // --- Приоритет access-тегов над vpsh (спека 2026-07-08) ---
+
+    [Theory]
+    [InlineData("dsl")]
+    [InlineData("mobile")]
+    [InlineData("satnet")]
+    public void AccessTag_BeatsVpsh_EvenWithAsJsonHosting(string accessTag) // Wavenet AS5413
+    {
+        // Противоречащий тег доступа (bgp.tools) сильнее устаревшего vpsh-тега,
+        // даже когда as.json щедро помечает ASN как hosting.
+        var map = Build(
+            Tags(("vpsh", [5413u]), (accessTag, [5413u])),
+            new() { [5413] = "hosting" });
+
+        map[5413].Should().Be("isp");
+    }
+
+    [Fact]
+    public void VpshOnly_WithAsJsonHosting_StaysHosting() // Claranet AS8426 — не сломать
+    {
+        // Без противоречащего access-тега vpsh по-прежнему даёт hosting.
+        var map = Build(
+            Tags(("vpsh", [8426u])),
+            new() { [8426] = "hosting" });
+
+        map[8426].Should().Be("hosting");
+    }
+
+    [Theory]
+    [InlineData("corp")]
+    [InlineData("biznet")]
+    public void BusinessTag_StaysBelowVpsh(string bizTag) // non-goal: бизнес-теги НЕ бьют vpsh
+    {
+        var map = Build(
+            Tags(("vpsh", [4242u]), (bizTag, [4242u])),
+            new());
+
+        map[4242].Should().Be("hosting");
+    }
 }

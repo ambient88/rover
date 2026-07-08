@@ -76,51 +76,27 @@ public class ProviderFinder(
     public static bool ShouldExcludeAi(string? typeFilter) =>
         typeFilter?.ToLowerInvariant() is "server" or "hosting" or "vps" or "dedicated" or "cloud";
 
-    // True only for the --type vps alias. Selects the "virtual servers" post-filter
-    // (drop curated dedicated-only ASNs). vps/dedicated share PeeringDB info_types —
-    // the split is applied on candidates, not on info_type (D-02/D-03).
-    public static bool IsVpsFilter(string? typeFilter) =>
-        typeFilter?.ToLowerInvariant() is "vps";
-
-    // True only for the --type dedicated alias. Selects the "bare-metal only" post-filter
-    // (keep only curated dedicated-only ASNs).
-    public static bool IsDedicatedFilter(string? typeFilter) =>
-        typeFilter?.ToLowerInvariant() is "dedicated";
-
-    // True only for the --type cloud alias. Selects the "hyperscalers only" post-filter
-    // (keep only curated cloud-only ASNs). D-05: cloud is its own curated subtype, no longer
-    // an alias of server/hosting.
-    public static bool IsCloudFilter(string? typeFilter) =>
-        typeFilter?.ToLowerInvariant() is "cloud";
-
-    // Pure post-filter for the vps / dedicated / cloud taxonomy (no I/O — covered offline):
-    //   --type dedicated → keep ONLY candidates whose Asn is in the curated dedicated-only set;
-    //   --type cloud     → keep ONLY candidates whose Asn is in the curated cloud-only set;
-    //   --type vps       → drop candidates in EITHER curated set (VPS by default, D-02/D-05);
-    //   otherwise (server/hosting/cdn/nsp/ai/null) → return the input unchanged (union, D-05).
-    // Reference cases: i3D (AS49544) absent under vps, present under dedicated and server;
-    // AWS (AS16509) absent under vps, present under cloud and server;
-    // PLAY2GO (AS215439, unmarked) present under vps and server (D-06).
-    public static IReadOnlyList<ProviderCandidate> ApplyTaxonomyFilter(
+    // Allowlist-членство для server-типов (заменяет ApplyTaxonomyFilter): кандидат остаётся,
+    // ТОЛЬКО если он в курируемом ядре по типу (pure allowlist — авто-гейт убран).
+    // Для не-server typeFilter (cdn/nsp/ai/null-как-«не сервер») — возвращает вход без изменений.
+    public static IReadOnlyList<ProviderCandidate> ApplyServerAllowlist(
         IReadOnlyList<ProviderCandidate> candidates,
-        IReadOnlySet<uint> dedicatedOnlyAsns,
-        IReadOnlySet<uint> cloudOnlyAsns,
-        string? typeFilter)
+        string? typeFilter,
+        ServerProviders serverProviders)
     {
-        if (IsDedicatedFilter(typeFilter))
-            return [.. candidates.Where(c => dedicatedOnlyAsns.Contains(c.Asn))];
-        if (IsCloudFilter(typeFilter))
-            return [.. candidates.Where(c => cloudOnlyAsns.Contains(c.Asn))];
-        if (IsVpsFilter(typeFilter))
-            return [.. candidates.Where(c => !dedicatedOnlyAsns.Contains(c.Asn) && !cloudOnlyAsns.Contains(c.Asn))];
-        return candidates;
+        if (!IsServerTypeFilter(typeFilter)) return candidates;
+        return [.. candidates.Where(c => serverProviders.IsAllowed(c.Asn, typeFilter))];
     }
+
+    // server-семейство фильтров, к которым применяется allowlist.
+    public static bool IsServerTypeFilter(string? typeFilter) =>
+        typeFilter?.ToLowerInvariant() is "server" or "vps" or "dedicated" or "cloud";
 
     public const string ValidTypeValues =
         "server                        — all server rental: VPS ∪ dedicated ∪ cloud [alias: hosting]\n" +
-        "                         vps              — virtual servers only (excludes curated dedicated-only and cloud-only providers)\n" +
-        "                         dedicated        — bare-metal / dedicated-only providers (curated list)\n" +
-        "                         cloud            — hyperscalers only (AWS, Azure, GCP, ... — curated list)\n" +
+        "                         vps              — rentable VPS providers (curated core + gated vpsh long-tail)\n" +
+        "                         dedicated        — bare-metal / dedicated providers (curated core)\n" +
+        "                         cloud            — hyperscalers only (AWS, Azure, GCP, ... — curated core)\n" +
         "                         cdn / content    — CDN and content networks\n" +
         "                         nsp / isp / transit  — Network service providers\n" +
         "                         ai               — AI/GPU-only cloud providers (CoreWeave, Lambda, Crusoe, etc.)";

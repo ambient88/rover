@@ -3,17 +3,13 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Офлайн-покрытие таксономии vps / dedicated / cloud (TAX-01, D-05/D-06):
-//   - --type алиасы: vps/dedicated/server/hosting/cloud дают одинаковые PeeringDB info_types
-//     (различие применяется пост-фильтром, не на info_type) — D-03/D-04.
-//   - Предикаты IsVpsFilter/IsDedicatedFilter/IsCloudFilter матчат только собственный алиас.
-//   - ApplyTaxonomyFilter — чистая функция: эталоны i3D (AS49544, dedicated), AWS (AS16509, cloud),
-//     Hetzner (AS24940) и PLAY2GO (AS215439, неразмечен → vps, D-06).
+// Офлайн-покрытие server-таксономии: --type алиасы vps/dedicated/server/hosting/cloud дают
+// одинаковые PeeringDB info_types (различие членства применяется allowlist'ом, не на info_type).
+// Членство server-фильтра проверяется через ServerProviders.IsAllowed (см. ServerProvidersTests) и
+// ProviderFinder.ApplyServerAllowlist (тест ниже). Старая subtractive-модель ApplyTaxonomyFilter
+// удалена вместе с предикатами Is*Filter.
 public class ProviderFinderTests
 {
-    private static ProviderCandidate C(uint asn, string name = "prov")
-        => new(asn, name, null, null, null, null, null, []);
-
     [Theory]
     [InlineData("vps")]
     [InlineData("VPS")]
@@ -38,43 +34,6 @@ public class ProviderFinderTests
         ProviderFinder.ResolveInfoTypes(null).Should().BeNull();
     }
 
-    [Theory]
-    [InlineData("vps", true)]
-    [InlineData("VPS", true)]
-    [InlineData("dedicated", false)]
-    [InlineData("server", false)]
-    [InlineData("hosting", false)]
-    [InlineData("cloud", false)]
-    [InlineData(null, false)]
-    public void IsVpsFilter_MatchesOnlyVpsAlias(string? type, bool expected)
-    {
-        ProviderFinder.IsVpsFilter(type).Should().Be(expected);
-    }
-
-    [Theory]
-    [InlineData("dedicated", true)]
-    [InlineData("DEDICATED", true)]
-    [InlineData("vps", false)]
-    [InlineData("server", false)]
-    [InlineData(null, false)]
-    public void IsDedicatedFilter_MatchesOnlyDedicatedAlias(string? type, bool expected)
-    {
-        ProviderFinder.IsDedicatedFilter(type).Should().Be(expected);
-    }
-
-    [Theory]
-    [InlineData("cloud", true)]
-    [InlineData("CLOUD", true)]
-    [InlineData("vps", false)]
-    [InlineData("dedicated", false)]
-    [InlineData("server", false)]
-    [InlineData("hosting", false)]
-    [InlineData(null, false)]
-    public void IsCloudFilter_MatchesOnlyCloudAlias(string? type, bool expected) // D-05
-    {
-        ProviderFinder.IsCloudFilter(type).Should().Be(expected);
-    }
-
     // Регресс: dedicated остаётся «server-подобным» для CDN/AI-исключений (D-03).
     [Theory]
     [InlineData("vps")]
@@ -83,48 +42,6 @@ public class ProviderFinderTests
     {
         ProviderFinder.ShouldExcludeCdn(type).Should().BeTrue();
         ProviderFinder.ShouldExcludeAi(type).Should().BeTrue();
-    }
-
-    // Матрица ApplyTaxonomyFilter: ded={49544 (i3D)}, cloud={16509 (AWS)}.
-    // Вход: i3D (dedicated), AWS (cloud), Hetzner (24940, unmarked), PLAY2GO (215439, unmarked, D-06).
-    private static readonly IReadOnlyList<ProviderCandidate> _taxonomyInput =
-        [C(49544, "i3D"), C(16509, "AWS"), C(24940, "Hetzner"), C(215439, "PLAY2GO")];
-    private static readonly HashSet<uint> _dedicatedSet = [49544];
-    private static readonly HashSet<uint> _cloudSet     = [16509];
-
-    [Fact]
-    public void ApplyTaxonomyFilter_Vps_DropsDedicatedAndCloudOnlyAsns() // i3D+AWS скрыты, PLAY2GO виден (D-06)
-    {
-        var result = ProviderFinder.ApplyTaxonomyFilter(_taxonomyInput, _dedicatedSet, _cloudSet, "vps");
-
-        result.Select(c => c.Asn).Should().BeEquivalentTo(new uint[] { 24940, 215439 });
-    }
-
-    [Fact]
-    public void ApplyTaxonomyFilter_Dedicated_KeepsOnlyDedicatedOnlyAsn() // i3D виден в --type dedicated
-    {
-        var result = ProviderFinder.ApplyTaxonomyFilter(_taxonomyInput, _dedicatedSet, _cloudSet, "dedicated");
-
-        result.Select(c => c.Asn).Should().Equal(49544u);
-    }
-
-    [Fact]
-    public void ApplyTaxonomyFilter_Cloud_KeepsOnlyCloudOnlyAsn() // AWS виден только в --type cloud (D-05)
-    {
-        var result = ProviderFinder.ApplyTaxonomyFilter(_taxonomyInput, _dedicatedSet, _cloudSet, "cloud");
-
-        result.Select(c => c.Asn).Should().Equal(16509u);
-    }
-
-    [Theory]
-    [InlineData("server")]
-    [InlineData("hosting")]
-    [InlineData(null)]
-    public void ApplyTaxonomyFilter_Umbrella_ReturnsAllUnchanged(string? type) // зонтик = vps ∪ dedicated ∪ cloud
-    {
-        var result = ProviderFinder.ApplyTaxonomyFilter(_taxonomyInput, _dedicatedSet, _cloudSet, type);
-
-        result.Select(c => c.Asn).Should().BeEquivalentTo(new uint[] { 49544, 16509, 24940, 215439 });
     }
 
     // ShouldIncludeUnverifiedHostingCandidate: candidates whose local ASN type is unknown
@@ -220,4 +137,28 @@ public class ProviderFinderTests
     [Fact]
     public void DeserializePdbNetOrNull_ToleratesCorruptJson()
         => ProviderFinder.DeserializePdbNetOrNull("{ not json ]").Should().BeNull();
+
+    [Fact]
+    public async Task ApplyServerAllowlist_KeepsOnlyCore_DropsEverythingElse() // pure allowlist
+    {
+        // core: только Hetzner(vps). Ни карьер, ни vpsh-хвост НЕ проходят — гейт убран.
+        var basePath = Path.Combine(Path.GetTempPath(), $"sp-{Guid.NewGuid():N}.json");
+        File.WriteAllText(basePath, """{"providers":[{"asn":24940,"name":"Hetzner","types":["vps"]}]}""");
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
+        File.Delete(basePath);
+
+        var candidates = new[]
+        {
+            new ProviderCandidate(24940, "Hetzner", "DE", null, "Content", 1, null, []),
+            new ProviderCandidate(31027, "GlobalConnect", "DK", null, "NSP", 1, null, []),
+            new ProviderCandidate(215439, "PLAY2GO", "PL", null, null, 1, null, []),
+        };
+
+        var kept = ProviderFinder.ApplyServerAllowlist(candidates, "vps", sp)
+                                 .Select(c => c.Asn).ToHashSet();
+
+        kept.Should().Contain(24940, "в ядре");
+        kept.Should().NotContain(31027, "карьер не в ядре");
+        kept.Should().NotContain(215439, "vpsh-хвост больше не проходит автоматически");
+    }
 }
