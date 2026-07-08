@@ -78,8 +78,4 @@ public class IpapiIsClient(HttpClient http)
 
         return new AsnInfo(abuserScore, type);
     }
-
-    // Backward-compatible wrapper used by ProviderScorer.
-    public async Task<double?> GetAbuserScoreAsync(uint asn, CancellationToken ct = default)
-        => (await GetAsnInfoAsync(asn, ct)).AbuserScore;
 }

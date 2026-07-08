@@ -40,7 +40,6 @@ public class ProviderScorer(
     PingService          pingService,
     AbuseIpDbClient?     abuseIpDb = null,
     GreyNoiseClient?     greyNoise = null,
-    IIpRangeIndex?       ipIndex   = null,
     RipeStatCache?       ripeCache = null)
 {
     public async Task<IReadOnlyList<ProviderRecommendation>> ScoreAsync(
@@ -196,7 +195,7 @@ public class ProviderScorer(
                             lock (pingByIp) pingByIp[ip] = null;
                             return;
                         }
-                        // Cache the RAW result (pre-traceroute correction), null included.
+                        // Cache the raw ping result, null included.
                         // 12h TTL: datacenter latency doesn't drift enough within a day to
                         // move the concave latency score, and silent hosts stay silent.
                         ripeCache?.Set($"ping_{ip}", SerializePingOrNull(probe), TimeSpan.FromHours(12));
@@ -214,13 +213,6 @@ public class ProviderScorer(
                         ping = p;
                         break;
                     }
-                }
-
-                // TCP RST timing is valid but may hit CDN edge — try traceroute for real DC latency.
-                if (ping?.IsTcp == true && anchorIp != null && ipIndex != null)
-                {
-                    var trPing = await pingService.PingViaTracerouteAsync(anchorIp, candidate.Asn, ipIndex, innerCt);
-                    if (trPing != null) ping = trPing;
                 }
 
                 double? latencyMs  = ping?.AvgMs;
@@ -278,11 +270,14 @@ public class ProviderScorer(
                 ));
             });
 
-        // Final selection: pinned ASNs are always included (they bypass the returnTop cap on non-pinned).
+        // Final selection: pinned ASNs are preferred over non-pinned (they claim returnTop
+        // slots first), but the overall result never exceeds returnTop.
+        // IN-02: без Take(returnTop) у pinned связка «пин-кап минимум 5» + «pinned минуют
+        // общий кап» возвращала при --top 3 --from до 5+ строк.
         var ordered = results.OrderByDescending(r => r.Score).ToList();
         if (pinnedAsns is { Count: > 0 })
         {
-            var pinned    = ordered.Where(r => pinnedAsns.Contains(r.Asn)).ToList();
+            var pinned    = ordered.Where(r => pinnedAsns.Contains(r.Asn)).Take(returnTop).ToList();
             var nonPinned = ordered.Where(r => !pinnedAsns.Contains(r.Asn))
                                    .Take(Math.Max(0, returnTop - pinned.Count)).ToList();
             return [.. pinned.Concat(nonPinned)];

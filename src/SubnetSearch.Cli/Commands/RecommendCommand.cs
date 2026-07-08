@@ -93,7 +93,7 @@ public sealed class RecommendCommand(
         var bgpView    = new BgpViewClient(peeringDbHttp);
         var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache);
         var pingSvc    = new PingService();
-        var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, recoIpIndex, ripeCache);
+        var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, ripeCache);
         var indexCache = new ProviderIndexCache(dataDir);
 
         IReadOnlyList<ProviderRecommendation> results = [];
@@ -112,9 +112,16 @@ public sealed class RecommendCommand(
         IReadOnlyList<(uint Asn, int Count)> fromAsnList = [];
         if (!string.IsNullOrWhiteSpace(fromSource))
         {
+            // Фолбэк-маршрут для URL-источников: peeringDbHttp привязан к физическому
+            // интерфейсу (мимо VPN), и заблокированные провайдером хосты
+            // (raw.githubusercontent.com) на нём падают с «SSL connection could not be
+            // established». Обычный HttpClient идёт системным маршрутом — через VPN.
+            using var systemRouteHttp = new HttpClient();
+            systemRouteHttp.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
             try
             {
-                var text = await IpListAnalyzer.ReadSourceAsync(fromSource, peeringDbHttp, ct);
+                var text = await IpListAnalyzer.ReadSourceAsync(
+                    fromSource, peeringDbHttp, ct, fallbackHttp: systemRouteHttp);
                 var ips  = IpListAnalyzer.ExtractIps(text);
                 if (ips.Count == 0)
                 {
@@ -131,7 +138,12 @@ public sealed class RecommendCommand(
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[yellow]--from: could not load source — {Markup.Escape(ex.Message)}[/]");
+                // Внешнее сообщение вида «The SSL connection could not be established,
+                // see inner exception» без inner бесполезно — разворачиваем до корня.
+                var msg = ex.Message;
+                if (ex.InnerException != null)
+                    msg += $" ← {ex.GetBaseException().Message}";
+                AnsiConsole.MarkupLine($"[yellow]--from: could not load source — {Markup.Escape(msg)}[/]");
             }
         }
 
@@ -509,12 +521,12 @@ public sealed class RecommendCommand(
                 else if (isTimeout)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB requests timed out — check your network connection or try again later.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
                 }
                 else if (hasErrors)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB fetch failed — see errors above.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
                 }
                 else if (diagnosticPreEnrich == 0 && diagnosticPerType != null)
                 {
@@ -524,7 +536,7 @@ public sealed class RecommendCommand(
                         AnsiConsole.MarkupLine($"[dim]  --type {Markup.Escape(typeFilter)} → {Markup.Escape(string.Join(", ", infoTypes ?? []))}[/]");
                     if (countryDisplay != null)
                         AnsiConsole.MarkupLine($"[dim]  --country {Markup.Escape(countryDisplay)} — try a different country code or remove the filter.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
                 }
                 else if (diagnosticPreEnrich > 0)
                 {
@@ -537,7 +549,7 @@ public sealed class RecommendCommand(
                 {
                     // No diagnostics available — unexpected state, do a live check
                     AnsiConsole.MarkupLine("[yellow]No hosting networks found. Running connectivity check...[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
                 }
             }
             else if (maxPingMs.HasValue)
@@ -642,11 +654,14 @@ public sealed class RecommendCommand(
         return [.. asnCounts.OrderByDescending(kv => kv.Value).Select(kv => (kv.Key, kv.Value))];
     }
 
-    private static async Task CheckPeeringDbConnectivityAsync(HttpClient http)
+    private static async Task CheckPeeringDbConnectivityAsync(HttpClient http, CancellationToken ct)
     {
         try
         {
-            using var cts  = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            // IN-03: собственный 10s-таймаут связан с внешним ct команды — Ctrl+C
+            // пользователя отменяет диагностический запрос сразу, а не через 10 секунд.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
             using var resp = await http.GetAsync(
                 "https://www.peeringdb.com/api/net?limit=1&status=ok", cts.Token);
             int code = (int)resp.StatusCode;
@@ -659,6 +674,12 @@ public sealed class RecommendCommand(
             }
             else
                 AnsiConsole.MarkupLine($"[yellow]PeeringDB returned HTTP {code}.[/]");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Отмена пользователя — не таймаут; пробрасываем (flush кэша выполнится
+            // в finally ExecuteAsync).
+            throw;
         }
         catch (OperationCanceledException)
         {
