@@ -248,6 +248,12 @@ dotnet test
 
 ---
 
+## 🙏 Acknowledgements
+
+`rover` stands on the shoulders of the open-source community.  
+We use third-party data for geolocation, ASN mapping, reputation scoring, and cloud provider detection.  
+Full credits and license information are available in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
 ## 🤝 Contributing
 
 Open issues and pull requests. All contributions welcome.
