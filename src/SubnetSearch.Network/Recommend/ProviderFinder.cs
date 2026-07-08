@@ -31,20 +31,15 @@ public class ProviderFinder(
     AsnExclusions?  exclusions            = null,
     BgpViewClient?  bgpView               = null,
     string?         cacheDir              = null,
-    IReadOnlyDictionary<uint, string>? caidaClassifications = null)
+    IReadOnlyDictionary<uint, string>? caidaClassifications = null,
+    RipeStatCache?  ripeCache             = null)
 {
-    private readonly AsnExclusions  _excl     = exclusions ?? AsnExclusions.Default;
-    private readonly BgpViewClient? _bgpView  = bgpView;
-    private readonly string?        _cacheDir = cacheDir;
+    private readonly AsnExclusions  _excl      = exclusions ?? AsnExclusions.Default;
+    private readonly BgpViewClient? _bgpView   = bgpView;
+    private readonly string?        _cacheDir  = cacheDir;
+    private readonly RipeStatCache? _ripeCache = ripeCache;
     private readonly IReadOnlyDictionary<uint, string>? _caida = caidaClassifications;
     private readonly IReadOnlyDictionary<uint, string>? _asnTypes = asnTypes;
-
-    // [TEMP-TIMING-PHASE10] env-gated per-phase timing accumulators (D-01, Open Q1). Accumulate across
-    // every enrichment call in a run (main + supplements); printed by RecommendCommand only when
-    // ROVER_TIMING=1. Plan 10-05 strips every line tagged with this marker.
-    public static long TimingPeeringDbMs;   // [TEMP-TIMING-PHASE10]
-    public static long TimingPhaseAMs;      // [TEMP-TIMING-PHASE10]
-    public static long TimingPhaseBRpkiMs;  // [TEMP-TIMING-PHASE10]
 
     private string? LookupAsnType(uint asn)
         => _asnTypes != null && _asnTypes.TryGetValue(asn, out var t) ? t : null;
@@ -172,10 +167,8 @@ public class ProviderFinder(
         // Requests are sequential to avoid triggering PeeringDB rate limits from parallel bursts.
         var types   = infoTypes ?? ["Content", "NSP"];
         var fetches = new List<(IReadOnlyList<ProviderCandidate> Candidates, string? Error)>();
-        var _swPeeringDb = System.Diagnostics.Stopwatch.StartNew();                              // [TEMP-TIMING-PHASE10]
         foreach (var t in types)
             fetches.Add(await FetchNetsByTypeAsync(t, ct, onStatus));
-        System.Threading.Interlocked.Add(ref TimingPeeringDbMs, _swPeeringDb.ElapsedMilliseconds); // [TEMP-TIMING-PHASE10]
 
         var perType = types.Zip(fetches).ToDictionary(p => p.First, p => p.Second.Candidates.Count);
         var errors  = fetches.Select(f => f.Error).OfType<string>().ToList();
@@ -511,7 +504,6 @@ public class ProviderFinder(
 
         // Phase A: RIPE prefixes + neighbours run simultaneously per candidate.
         // ASN type check is a local map lookup (as.json + bgp.tools) — no network call.
-        var _swPhaseA = System.Diagnostics.Stopwatch.StartNew();                                   // [TEMP-TIMING-PHASE10]
         await Parallel.ForEachAsync(candidates,
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
@@ -588,11 +580,9 @@ public class ProviderFinder(
                     UpstreamCount   = upstream,
                 });
             });
-        System.Threading.Interlocked.Add(ref TimingPhaseAMs, _swPhaseA.ElapsedMilliseconds);       // [TEMP-TIMING-PHASE10]
 
         // Phase B: RPKI — sample first prefix only to limit RIPE Stat load.
         var results = new System.Collections.Concurrent.ConcurrentBag<ProviderCandidate>();
-        var _swPhaseB = System.Diagnostics.Stopwatch.StartNew();                                   // [TEMP-TIMING-PHASE10]
         await Parallel.ForEachAsync(withPrefixes,
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
@@ -603,7 +593,7 @@ public class ProviderFinder(
                     await _ripeSemaphore.WaitAsync(innerCt);
                     acquired = true;
                     var rpki = await ripeClient.GetRpkiValidityRatioAsync(
-                        candidate.Prefixes, maxSample: 2, ct: innerCt);
+                        candidate.Asn, candidate.Prefixes, maxSample: 2, ct: innerCt);
                     results.Add(candidate with { RpkiScore = rpki });
                 }
                 catch (OperationCanceledException) when (innerCt.IsCancellationRequested) { throw; }
@@ -613,7 +603,6 @@ public class ProviderFinder(
                 }
                 finally { if (acquired) _ripeSemaphore.Release(); }
             });
-        System.Threading.Interlocked.Add(ref TimingPhaseBRpkiMs, _swPhaseB.ElapsedMilliseconds);    // [TEMP-TIMING-PHASE10]
 
         return [.. results];
     }
@@ -623,12 +612,13 @@ public class ProviderFinder(
     {
         IReadOnlyList<string> ipv4 = [];
         IReadOnlyList<string> ipv6 = [];
+        bool ripeOk   = false;
         bool acquired = false;
         try
         {
             await _ripeSemaphore.WaitAsync(ct);
             acquired = true;
-            (ipv4, ipv6) = await ripeClient.GetAllPrefixesAsync(asn, ct);
+            (ripeOk, ipv4, ipv6) = await ripeClient.GetAllPrefixesAsync(asn, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { }
@@ -637,11 +627,23 @@ public class ProviderFinder(
         // BGPView fallback: RIPE Stat returned no IPv4 prefixes for this ASN.
         // Throttled to ~42 req/min — only triggered for genuinely missing ASNs.
         // Preserves any IPv6 data already returned by RIPE Stat.
-        if (ipv4.Count == 0 && _bgpView != null)
+        // Known-empty ASNs (pfx0 marker) skip the throttled call within the cache TTL —
+        // otherwise ~100 serialized fallback requests add minutes to every run.
+        if (ipv4.Count == 0 && _bgpView != null && !ripeClient.IsKnownEmpty(asn))
         {
-            var (bgpIpv4, bgpIpv6) = await _bgpView.GetPrefixesAsync(asn, ct);
+            var (bgpOk, bgpIpv4, bgpIpv6) = await _bgpView.GetPrefixesAsync(asn, ct);
             ipv4 = bgpIpv4;
             if (ipv6.Count == 0) ipv6 = bgpIpv6;
+
+            if (ipv4.Count > 0) ripeClient.CachePrefixes(asn, ipv4, ipv6); // fallback hit → same pfx_ key
+            // WR-01: полный 24ч-маркер только при ПОДТВЕРЖДЁННОЙ пустоте — оба источника
+            // успешно ответили «префиксов нет». Двойной транзиентный сбой (общая сетевая
+            // деградация, двойной rate-limit) больше не помечает здоровый ASN как пустой на 24ч.
+            // Неподтверждённая пустота получает КОРОТКИЙ маркер (1ч): без него каждый
+            // прогон заново шёл в сериализованный BGPView (1.4с/ASN) — при системном
+            // отказе BGPView это минуты на КАЖДЫЙ прогон вместо одного часового окна.
+            else if (ripeOk && bgpOk) ripeClient.MarkEmpty(asn);
+            else                      ripeClient.MarkEmpty(asn, TimeSpan.FromHours(1));
         }
 
         return (ipv4, ipv6);
@@ -721,42 +723,68 @@ public class ProviderFinder(
             {
                 ProviderCandidate? candidate = null;
                 bool foundInPeeringDb = false;
-                try
+                bool haveRecord = false;
+
+                // Cache-aside: the supplement ASN sets are stable across runs, so without a
+                // cache the same per-ASN /net?asn= lookups repeat every run (DoP=3 ≈ 5s for 40).
+                // The RAW record is cached pre-filter so per-call type/CDN filters below apply.
+                if (_ripeCache != null && _ripeCache.TryGet($"pdb_{entry.Asn}", out var cachedNet))
                 {
-                    using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
-                    reqCts.CancelAfter(TimeSpan.FromSeconds(5));
-                    using var resp = await peeringDbHttp.GetAsync(
-                        $"{PeeringDbBase}/net?asn={entry.Asn}&status=ok", reqCts.Token);
-
-                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    var rec = DeserializePdbNetOrNull(cachedNet!);
+                    if (rec != null)
                     {
-                        // Report only once — every parallel slot would hit 429 simultaneously.
-                        if (Interlocked.Exchange(ref rateLimitReported, 1) == 0)
-                            onError?.Invoke(
-                                "PeeringDB rate limit hit (HTTP 429) — enrichment incomplete, try again later.");
-                        return;
-                    }
-
-                    if (!resp.IsSuccessStatusCode) return;
-
-                    var netJson = await resp.Content.ReadAsStringAsync(innerCt);
-                    using var doc = JsonDocument.Parse(netJson);
-                    var arr = doc.RootElement.GetProperty("data");
-                    if (arr.GetArrayLength() > 0)
-                    {
-                        foundInPeeringDb = true;
-                        candidate = ParseNetwork(arr[0], requireInfoType: false);
-                        if (hasTypeFilter && candidate != null &&
-                            !infoTypes!.Contains(candidate.InfoType ?? "",
-                                StringComparer.OrdinalIgnoreCase))
-                            candidate = null;
-
-                        if (excludeCdn && candidate != null && IsCdnProvider(candidate))
-                            candidate = null;
+                        haveRecord       = true;
+                        foundInPeeringDb = rec.Found;
+                        if (rec.Found && rec.Name != null)
+                            candidate = new ProviderCandidate(
+                                entry.Asn, rec.Name, rec.Country, rec.Website,
+                                rec.InfoType, rec.PeeringCount, null, []);
                     }
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { }
+
+                if (!haveRecord)
+                {
+                    try
+                    {
+                        using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                        reqCts.CancelAfter(TimeSpan.FromSeconds(5));
+                        using var resp = await peeringDbHttp.GetAsync(
+                            $"{PeeringDbBase}/net?asn={entry.Asn}&status=ok", reqCts.Token);
+
+                        if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                        {
+                            // Report only once — every parallel slot would hit 429 simultaneously.
+                            if (Interlocked.Exchange(ref rateLimitReported, 1) == 0)
+                                onError?.Invoke(
+                                    "PeeringDB rate limit hit (HTTP 429) — enrichment incomplete, try again later.");
+                            return;
+                        }
+
+                        if (!resp.IsSuccessStatusCode) return;
+
+                        var netJson = await resp.Content.ReadAsStringAsync(innerCt);
+                        using var doc = JsonDocument.Parse(netJson);
+                        var arr = doc.RootElement.GetProperty("data");
+                        if (arr.GetArrayLength() > 0)
+                        {
+                            foundInPeeringDb = true;
+                            candidate = ParseNetwork(arr[0], requireInfoType: false);
+                        }
+                        // Cache successful lookups only (found or genuinely absent) —
+                        // errors/timeouts above returned early or fall to catch.
+                        _ripeCache?.Set($"pdb_{entry.Asn}",
+                            SerializePdbNet(candidate, foundInPeeringDb), PeeringDbCacheTtl);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch { }
+                }
+
+                // Per-call filters — applied to both fresh and cached records.
+                if (candidate != null && hasTypeFilter &&
+                    !infoTypes!.Contains(candidate.InfoType ?? "", StringComparer.OrdinalIgnoreCase))
+                    candidate = null;
+                if (candidate != null && excludeCdn && IsCdnProvider(candidate))
+                    candidate = null;
 
                 // Fallback: only when PeeringDB genuinely has NO record for this ASN.
                 // Do NOT fall back when we explicitly excluded the ASN (CDN/type filter) —
@@ -797,6 +825,28 @@ public class ProviderFinder(
         => await EnrichWithPrefixesAsync(candidates, ct,
             filterHostingOnly: excludeCdn, localHostingWhitelist: localHostingWhitelist,
             strictContentFilter: false, excludeAi: excludeAi);
+
+    // Wrapper for pdb_{asn} cache entries: Found=false means "PeeringDB has no record"
+    // (negative caching); Found=true with null Name means "record exists but unparseable"
+    // (suppresses the RIPE overview fallback, same as a live unparseable response).
+    internal record PdbNetCacheData(
+        [property: System.Text.Json.Serialization.JsonPropertyName("f")] bool    Found,
+        [property: System.Text.Json.Serialization.JsonPropertyName("n")] string? Name,
+        [property: System.Text.Json.Serialization.JsonPropertyName("c")] string? Country,
+        [property: System.Text.Json.Serialization.JsonPropertyName("w")] string? Website,
+        [property: System.Text.Json.Serialization.JsonPropertyName("t")] string? InfoType,
+        [property: System.Text.Json.Serialization.JsonPropertyName("p")] int?    PeeringCount);
+
+    internal static string SerializePdbNet(ProviderCandidate? c, bool found)
+        => JsonSerializer.Serialize(new PdbNetCacheData(
+            found, c?.Name, c?.Country, c?.Website, c?.InfoType, c?.PeeringCount));
+
+    // Corrupt JSON is treated as "no cached data" (swallow-and-fallback convention).
+    internal static PdbNetCacheData? DeserializePdbNetOrNull(string json)
+    {
+        try { return JsonSerializer.Deserialize<PdbNetCacheData>(json); }
+        catch (JsonException) { return null; }
+    }
 
     private static ProviderCandidate? ParseNetwork(JsonElement net, bool requireInfoType = true)
     {

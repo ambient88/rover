@@ -84,4 +84,126 @@ public class ProviderScorerTests
         var ips = ProviderScorer.GetSampleIps("192.168.1.0/24", 3).ToList();
         ips.Should().Equal("192.168.1.1", "192.168.1.2", "192.168.1.3");
     }
+
+    // ── Пинг-кэш (D-05, Phase 10): сериализация и round-trip через RipeStatCache ──
+
+    [Fact]
+    public void SerializePingOrNull_RoundTripsPopulatedStats() // положительный результат
+    {
+        var stats = new SubnetSearch.Core.Models.Classification.PingStats(1.5, 2.5, 4.0, 33);
+        var json  = ProviderScorer.SerializePingOrNull(stats);
+        var back  = ProviderScorer.DeserializePingOrNull(json);
+        back.Should().NotBeNull();
+        back!.MinMs.Should().Be(1.5);
+        back.AvgMs.Should().Be(2.5);
+        back.MaxMs.Should().Be(4.0);
+        back.PacketLoss.Should().Be(33);
+    }
+
+    [Fact]
+    public void SerializePingOrNull_RoundTripsNull() // отрицательный результат (молчащий хост)
+    {
+        var json = ProviderScorer.SerializePingOrNull(null);
+        ProviderScorer.DeserializePingOrNull(json).Should().BeNull();
+    }
+
+    [Fact]
+    public void PingCache_HitPath_ReconstructsStatsFromRealCache() // путь попадания без спавна ping
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var cache = new RipeStatCache(dir);
+            var stats = new SubnetSearch.Core.Models.Classification.PingStats(1.0, 2.0, 3.0, 0);
+            cache.Set("ping_8.8.8.1", ProviderScorer.SerializePingOrNull(stats), TimeSpan.FromMinutes(10));
+
+            cache.TryGet("ping_8.8.8.1", out var json).Should().BeTrue();
+            var back = ProviderScorer.DeserializePingOrNull(json!);
+            back.Should().NotBeNull();
+            back!.AvgMs.Should().Be(2.0);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void PingCache_NegativeHit_SignalsSkipWithoutRePing() // кэшированный молчащий хост
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var cache = new RipeStatCache(dir);
+            cache.Set("ping_10.0.0.1", ProviderScorer.SerializePingOrNull(null), TimeSpan.FromMinutes(10));
+
+            // TryGet == true при десериализации в null — сигнал «хост молчит, не пинговать повторно».
+            cache.TryGet("ping_10.0.0.1", out var json).Should().BeTrue();
+            ProviderScorer.DeserializePingOrNull(json!).Should().BeNull();
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void DeserializePingOrNull_ToleratesCorruptJson()
+        => ProviderScorer.DeserializePingOrNull("{ not json ]").Should().BeNull();
+
+    // ── WR-08: битый JSON дизамбигуирован от настоящего негативного хита ──
+
+    [Fact]
+    public void TryDeserializePing_CorruptJson_SignalsCacheMiss() // false → IP уйдёт в пробу
+    {
+        ProviderScorer.TryDeserializePing("{ not json ]", out var stats).Should().BeFalse();
+        stats.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryDeserializePing_NegativeHit_SignalsKnownSilent() // true + null → хост молчит
+    {
+        var json = ProviderScorer.SerializePingOrNull(null);
+        ProviderScorer.TryDeserializePing(json, out var stats).Should().BeTrue();
+        stats.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryDeserializePing_PositiveHit_ReturnsStats() // true + stats → живой хост из кэша
+    {
+        var json = ProviderScorer.SerializePingOrNull(
+            new SubnetSearch.Core.Models.Classification.PingStats(1.0, 2.0, 3.0, 0));
+        ProviderScorer.TryDeserializePing(json, out var stats).Should().BeTrue();
+        stats.Should().NotBeNull();
+        stats!.AvgMs.Should().Be(2.0);
+    }
+
+    // ── Abuse-кэш (Phase 10, «ещё быстрее»): abuser_score ipapi.is кэшируется по ASN ──
+
+    [Fact]
+    public void SerializeAbuse_RoundTripsScore() // положительный результат
+    {
+        var json = ProviderScorer.SerializeAbuse(0.0042);
+        ProviderScorer.DeserializeAbuseOrNull(json).Should().Be(0.0042);
+    }
+
+    [Fact]
+    public void SerializeAbuse_RoundTripsNull() // отрицательный результат (нет данных / сбой API)
+    {
+        var json = ProviderScorer.SerializeAbuse(null);
+        ProviderScorer.DeserializeAbuseOrNull(json).Should().BeNull();
+    }
+
+    [Fact]
+    public void AbuseCache_HitPath_ReconstructsScoreFromRealCache() // попадание без HTTP-запроса
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var cache = new RipeStatCache(dir);
+            cache.Set("abuse_21859", ProviderScorer.SerializeAbuse(0.13), TimeSpan.FromDays(7));
+
+            cache.TryGet("abuse_21859", out var json).Should().BeTrue();
+            ProviderScorer.DeserializeAbuseOrNull(json!).Should().Be(0.13);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void DeserializeAbuseOrNull_ToleratesCorruptJson()
+        => ProviderScorer.DeserializeAbuseOrNull("{ not json ]").Should().BeNull();
 }

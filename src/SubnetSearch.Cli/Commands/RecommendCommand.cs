@@ -1,4 +1,4 @@
-using SubnetSearch.Classification;
+﻿using SubnetSearch.Classification;
 using SubnetSearch.Network;
 using SubnetSearch.Network.Http;
 using SubnetSearch.Network.Recommend;
@@ -13,6 +13,24 @@ public sealed class RecommendCommand(
     string? sortBy, string? traceTo, string? fromSource, string? preset) : ICommand
 {
     public async Task<int> ExecuteAsync(CancellationToken ct)
+    {
+        // WR-04: flush кэша в finally — любое исключение внутри поиска (сбой запуска
+        // ping, необработанная сетевая ошибка, Ctrl+C) не должно терять сотни
+        // накопленных за прогон RIPE/PeeringDB/ping-ответов: смысл кэша — переживать
+        // неудачные прогоны. Отравленные негативные записи при сбоях больше не пишутся
+        // (CR-01/WR-01/WR-03), поэтому flush безопасен и на пути ошибки.
+        var ripeCache = await RipeStatCache.LoadAsync(ctx.DataDir);
+        try
+        {
+            return await ExecuteWithCacheAsync(ripeCache, ct);
+        }
+        finally
+        {
+            await ripeCache.FlushIfDirtyAsync();
+        }
+    }
+
+    private async Task<int> ExecuteWithCacheAsync(RipeStatCache ripeCache, CancellationToken ct)
     {
         // Original HandleRecommend parameters map to CliContext + parsed args.
         // Aliased to locals so the transferred body stays verbatim and the Spectre
@@ -49,7 +67,7 @@ public sealed class RecommendCommand(
             AnsiConsole.MarkupLine("[yellow]Note: --sort coverage requires --from; falling back to score.[/]");
         Console.WriteLine();
 
-        var ripeCache  = await RipeStatCache.LoadAsync(dataDir);
+
         var ripeClient = new RipeStatClient(peeringDbHttp, ripeCache);
         var spamhaus   = new SpamhausDropClient(peeringDbHttp);
         var ipapiIs    = new IpapiIsClient(peeringDbHttp);
@@ -73,9 +91,9 @@ public sealed class RecommendCommand(
         var asnTypes         = AsnTypeResolver.Build(bgpToolsTags, asJsonCategories);
 
         var bgpView    = new BgpViewClient(peeringDbHttp);
-        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData);
+        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache);
         var pingSvc    = new PingService();
-        var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, recoIpIndex);
+        var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, recoIpIndex, ripeCache);
         var indexCache = new ProviderIndexCache(dataDir);
 
         IReadOnlyList<ProviderRecommendation> results = [];
@@ -121,8 +139,6 @@ public sealed class RecommendCommand(
         bool needsAiExclusion   = ProviderFinder.ShouldExcludeAi(typeFilter);
         bool aiOnly             = ProviderFinder.ShouldFilterAiOnly(typeFilter);
         IReadOnlyList<(uint Asn, int Count)>? localHostingAsns = null;
-
-        long _scoringPingMs = 0;   // [TEMP-TIMING-PHASE10] scoring+ping elapsed, printed only when ROVER_TIMING=1 (D-01)
 
         await AnsiConsole.Status()
             .StartAsync("Searching...", async ctx =>
@@ -282,7 +298,11 @@ public sealed class RecommendCommand(
                         {
                             ctx.Status($"Fetching ASN registry for {cc} from RIPE Stat...");
                             countryAsns = await ripeClient.GetCountryAsnsAsync(cc, ct);
-                            updatedCacheEntries[cc] = countryAsns;
+                            // WR-05: пустой список неотличим от таймаута/сбоя RIPE Stat —
+                            // не кэшируем пустоту на 7 дней; подлинно пустая страна
+                            // перезапросится в следующем прогоне (это дёшево).
+                            if (countryAsns.Count > 0)
+                                updatedCacheEntries[cc] = countryAsns;
                         }
 
                         supplementPairs.AddRange(
@@ -445,10 +465,12 @@ public sealed class RecommendCommand(
                         .ToHashSet();
                 }
 
-                var _swScoring = System.Diagnostics.Stopwatch.StartNew();                     // [TEMP-TIMING-PHASE10]
+                // WR-06: в режиме --from пользователь явно перечислил провайдеров своим
+                // списком IP — жёсткий фильтр abuser_score > 0.75 отключается, как и
+                // задокументировано у хард-фильтра в ProviderScorer.
                 results = await scorer.ScoreAsync(candidates, maxPingMs, returnTop, pingTopN,
+                    strictAbuseFilter: coverageMap == null,
                     weights: weights, pinnedAsns: pinnedAsns, ct: ct);
-                _scoringPingMs = _swScoring.ElapsedMilliseconds;                              // [TEMP-TIMING-PHASE10]
             });
 
         int diagnosticAfterScoring = results.Count;
@@ -467,15 +489,6 @@ public sealed class RecommendCommand(
         {
             AnsiConsole.MarkupLine($"[dim]Candidates after enrichment: {diagnosticAfterRipe} | Results after scoring: {diagnosticAfterScoring}[/]");
         }
-
-        // [TEMP-TIMING-PHASE10] per-phase before-baseline breakdown (D-01, Open Q1); dark unless ROVER_TIMING=1. Stripped in 10-05.
-        if (Environment.GetEnvironmentVariable("ROVER_TIMING") == "1")                                                       // [TEMP-TIMING-PHASE10]
-        {                                                                                                                     // [TEMP-TIMING-PHASE10]
-            AnsiConsole.MarkupLine($"[grey][TIMING] PeeringDB fetch:   {ProviderFinder.TimingPeeringDbMs} ms[/]");           // [TEMP-TIMING-PHASE10]
-            AnsiConsole.MarkupLine($"[grey][TIMING] Phase A prefixes+neighbours: {ProviderFinder.TimingPhaseAMs} ms[/]");    // [TEMP-TIMING-PHASE10]
-            AnsiConsole.MarkupLine($"[grey][TIMING] Phase B RPKI:      {ProviderFinder.TimingPhaseBRpkiMs} ms[/]");          // [TEMP-TIMING-PHASE10]
-            AnsiConsole.MarkupLine($"[grey][TIMING] scoring+ping:      {_scoringPingMs} ms[/]");                             // [TEMP-TIMING-PHASE10]
-        }                                                                                                                     // [TEMP-TIMING-PHASE10]
 
         if (results.Count == 0)
         {
@@ -538,8 +551,7 @@ public sealed class RecommendCommand(
                 if (typeFilter != null)
                     AnsiConsole.MarkupLine($"[dim]  --type {Markup.Escape(typeFilter)} may be filtering too aggressively.[/]");
             }
-            await ripeCache.FlushIfDirtyAsync();
-            return 0;
+            return 0; // WR-04: flush выполняется в finally ExecuteAsync
         }
 
         // --from: annotate results with coverage from the IP list.
@@ -605,8 +617,7 @@ public sealed class RecommendCommand(
 
         RecommendationRenderer.PrintRecommendations(title, results, abuseIpDb != null, greyNoise != null, traceTo != null);
 
-        await ripeCache.FlushIfDirtyAsync();
-        return 0;
+        return 0; // WR-04: flush выполняется в finally ExecuteAsync
     }
 
     // ================== HELPERS ==================

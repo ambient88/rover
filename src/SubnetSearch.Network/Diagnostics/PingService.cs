@@ -26,6 +26,19 @@ public partial class PingService : IPingService
     [GeneratedRegex(@"\((\d+)%\s+loss\)", RegexOptions.IgnoreCase)]
     private static partial Regex WindowsLossRegex();
 
+    // WR-07: языконезависимый фолбэк для локализованного ping.exe (русская Windows:
+    // «Минимальное = 24мсек, Максимальное = 27мсек, Среднее = 25мсек»). Порядок
+    // min, max, avg одинаков на всех локалях — это один формат-стринг ping.exe.
+    // Якорь «число сразу с буквенным суффиксом единицы» не матчит строку статистики
+    // пакетов («отправлено = 4, получено = 4») — там после числа нет букв.
+    [GeneratedRegex(@"=\s*(\d+)\s*\p{L}+[,;]\s*\p{L}+\s*=\s*(\d+)\s*\p{L}+[,;]\s*\p{L}+\s*=\s*(\d+)\s*\p{L}+")]
+    private static partial Regex WindowsRttGenericRegex();
+
+    // WR-07: фолбэк потерь — единственный процент в скобках в выводе ping.exe
+    // это packet loss: «(25% loss)» / «(25% потерь)».
+    [GeneratedRegex(@"\((\d+)%[^)]*\)")]
+    private static partial Regex WindowsLossGenericRegex();
+
     public async Task<PingStats?> PingAsync(string host, int count = 4, CancellationToken cancellationToken = default)
     {
         // Validate host before passing to the shell to prevent argument injection.
@@ -40,7 +53,7 @@ public partial class PingService : IPingService
         string args = BuildPingArguments(host, count, isWindows, physIp, iface);
 
         string output = await RunAsync("ping", args, cancellationToken);
-        return Parse(output);
+        return Parse(output, isWindows);
     }
 
     // Both branches bind ICMP to the physical interface, bypassing VPN routing:
@@ -62,17 +75,24 @@ public partial class PingService : IPingService
         return $"-c {count} -W 1 {ifaceArg}{host}";
     }
 
-    private PingStats? Parse(string output)
+    // internal static + явный isWindows: разбор проверяется офлайн-тестами на образцах
+    // вывода разных локалей (WR-07), по аналогии с BuildPingArguments.
+    internal static PingStats? Parse(string output, bool isWindows)
     {
         if (string.IsNullOrWhiteSpace(output)) return null;
 
         int loss = 0;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (isWindows)
         {
+            // WR-07: сначала английский регекс, затем языконезависимый фолбэк —
+            // на локализованной Windows «Minimum = ...» не встречается, и до фикса
+            // каждый хост считался silent (и кэшировался как silent на 12 часов).
             var lossMatch = WindowsLossRegex().Match(output);
+            if (!lossMatch.Success) lossMatch = WindowsLossGenericRegex().Match(output);
             if (lossMatch.Success) loss = int.Parse(lossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
 
             var rttMatch = WindowsRttRegex().Match(output);
+            if (!rttMatch.Success) rttMatch = WindowsRttGenericRegex().Match(output);
             if (!rttMatch.Success) return null;
             // Windows regex: Minimum=Groups[1], Maximum=Groups[2], Average=Groups[3]
             return new PingStats(
@@ -128,7 +148,10 @@ public partial class PingService : IPingService
             UseShellExecute        = false,
             CreateNoWindow         = true,
         };
-        using var process = Process.Start(psi)!;
+        // WR-03: Process.Start возвращает null, если процесс не удалось запустить —
+        // пустой вывод трактуется вызывающим как «нет данных» (Parse вернёт null).
+        using var process = Process.Start(psi);
+        if (process == null) return string.Empty;
         try
         {
             // Read stdout and stderr concurrently — if only stdout is read and stderr fills
@@ -142,7 +165,10 @@ public partial class PingService : IPingService
         }
         catch (OperationCanceledException)
         {
-            process.Kill(entireProcessTree: true);
+            // WR-03: процесс мог уже завершиться сам — Kill бросил бы
+            // InvalidOperationException и замаскировал бы исходную отмену.
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
             throw;
         }
     }

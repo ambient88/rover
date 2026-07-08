@@ -11,7 +11,9 @@ public class BgpViewClient(HttpClient http)
     private const int ThrottleDelayMs = 1_400; // ~42 req/min, safely under the 45 req/min cap
     private const int TimeoutMs       = 10_000;
 
-    public async Task<(IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> GetPrefixesAsync(
+    // Ok = false означает «источник упал» (HTTP-сбой / таймаут / битый ответ) —
+    // пустые списки при Ok = false не являются авторитетным «префиксов нет» (WR-01).
+    public async Task<(bool Ok, IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> GetPrefixesAsync(
         uint asn, CancellationToken ct = default)
     {
         await _throttle.WaitAsync(ct);
@@ -23,25 +25,25 @@ public class BgpViewClient(HttpClient http)
             using var resp = await http.GetAsync(
                 $"https://api.bgpview.io/asn/{asn}/prefixes", reqCts.Token);
 
-            if (!resp.IsSuccessStatusCode) return ([], []);
+            if (!resp.IsSuccessStatusCode) return (false, [], []);
 
             using var doc = JsonDocument.Parse(
                 await resp.Content.ReadAsStringAsync(reqCts.Token));
 
-            if (!doc.RootElement.TryGetProperty("data", out var data)) return ([], []);
+            if (!doc.RootElement.TryGetProperty("data", out var data)) return (false, [], []);
 
             var ipv4 = ParsePrefixes(data, "ipv4_prefixes");
             var ipv6 = ParsePrefixes(data, "ipv6_prefixes");
 
             await Task.Delay(ThrottleDelayMs, ct);
-            return (ipv4, ipv6);
+            return (true, ipv4, ipv6);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch
         {
             // WR-01: on timeout/error, still honour the rate limit before releasing the semaphore.
             try { await Task.Delay(ThrottleDelayMs, ct); } catch { }
-            return ([], []);
+            return (false, [], []);
         }
         finally { _throttle.Release(); }
     }

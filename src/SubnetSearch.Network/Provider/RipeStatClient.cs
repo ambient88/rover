@@ -26,6 +26,9 @@ public class RipeStatClient
         [property: JsonPropertyName("u")] int Upstream,
         [property: JsonPropertyName("d")] int Downstream);
 
+    private record RpkiCacheData(
+        [property: JsonPropertyName("r")] double? Ratio);
+
     // ── ASN info ─────────────────────────────────────────────────────────────
 
     public async Task<AsnOverview?> GetAsnOverviewAsync(uint asn, CancellationToken ct = default)
@@ -87,21 +90,29 @@ public class RipeStatClient
     }
 
     // Returns both IPv4 and IPv6 prefixes in one request — avoids duplicate RIPE Stat calls.
-    public async Task<(IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> GetAllPrefixesAsync(
+    // Ok = false означает «источник упал» (HTTP-сбой / не-ok статус / битый ответ) —
+    // вызывающий НЕ должен трактовать пустые списки при Ok = false как авторитетное
+    // «префиксов нет» (WR-01: иначе транзиентный сбой ставит негативный маркер pfx0_).
+    public async Task<(bool Ok, IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> GetAllPrefixesAsync(
         uint asn, CancellationToken ct = default)
     {
         string cacheKey = $"pfx_{asn}";
         if (_cache != null && _cache.TryGet(cacheKey, out var cached))
         {
-            var d = JsonSerializer.Deserialize<PrefixCacheData>(cached!);
-            if (d != null) return (d.Ipv4, d.Ipv6);
+            // WR-02: битая запись → cache-miss, уходим в сеть и перезаписываем её.
+            try
+            {
+                var d = JsonSerializer.Deserialize<PrefixCacheData>(cached!);
+                if (d != null) return (true, d.Ipv4, d.Ipv6);
+            }
+            catch (JsonException) { }
         }
 
         try
         {
             var r = await _http.GetFromJsonAsync<AnnouncedPrefixesResponse>(
                 $"{Base}/announced-prefixes/data.json?resource=AS{asn}", ct);
-            if (r?.Status != "ok" || r.Data?.Prefixes == null) return ([], []);
+            if (r?.Status != "ok" || r.Data?.Prefixes == null) return (false, [], []);
             var all = r.Data.Prefixes
                 .Select(p => p.Prefix)
                 .Where(p => !string.IsNullOrWhiteSpace(p))
@@ -113,9 +124,31 @@ public class RipeStatClient
             _cache?.Set(cacheKey,
                 JsonSerializer.Serialize(new PrefixCacheData([.. ipv4], [.. ipv6])));
 
-            return (ipv4, ipv6);
+            return (true, ipv4, ipv6);
         }
-        catch { return ([], []); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return (false, [], []); }
+    }
+
+    // Persists prefixes obtained from a fallback source (BGPView) under the same pfx_{asn}
+    // key, so a fallback ASN is served from cache instead of re-running the throttled
+    // fallback request on every run.
+    public void CachePrefixes(uint asn, IReadOnlyList<string> ipv4, IReadOnlyList<string> ipv6)
+        => _cache?.Set($"pfx_{asn}",
+            JsonSerializer.Serialize(new PrefixCacheData([.. ipv4], [.. ipv6])));
+
+    // pfx0_{asn}: negative marker — both RIPE Stat and the fallback source returned no IPv4.
+    // Lets callers skip the throttled fallback for known-empty ASNs within the cache TTL.
+    public bool IsKnownEmpty(uint asn)
+        => _cache != null && _cache.TryGet($"pfx0_{asn}", out _);
+
+    // ttl == null → TTL кэша по умолчанию (24ч, подтверждённая пустота);
+    // короткий ttl — для неподтверждённой (источник сбоил), чтобы ASN не долбил
+    // троттленный BGPView каждый прогон, но и не замораживался на сутки (WR-01).
+    public void MarkEmpty(uint asn, TimeSpan? ttl = null)
+    {
+        if (ttl.HasValue) _cache?.Set($"pfx0_{asn}", "1", ttl.Value);
+        else              _cache?.Set($"pfx0_{asn}", "1");
     }
 
     // Returns (UpstreamCount, DownstreamCount) — proxy for connectivity quality.
@@ -125,8 +158,13 @@ public class RipeStatClient
         string cacheKey = $"nbr_{asn}";
         if (_cache != null && _cache.TryGet(cacheKey, out var cached))
         {
-            var d = JsonSerializer.Deserialize<NeighbourCacheData>(cached!);
-            if (d != null) return (d.Upstream, d.Downstream);
+            // WR-02: битая запись → cache-miss, уходим в сеть и перезаписываем её.
+            try
+            {
+                var d = JsonSerializer.Deserialize<NeighbourCacheData>(cached!);
+                if (d != null) return (d.Upstream, d.Downstream);
+            }
+            catch (JsonException) { }
         }
 
         try
@@ -222,13 +260,29 @@ public class RipeStatClient
 
     // Returns the ratio of RPKI-valid prefixes (0.0–1.0).
     // Samples up to maxSample prefixes to limit request count.
+    // Cached per-ASN under rpki_{asn}: авторитетный результат (все сэмплы отвечены,
+    // включая подлинный null у ASN без префиксов) живёт «навсегда»; частичный —
+    // 1 час; полный сбой не кэшируется вовсе (CR-01).
     public async Task<double?> GetRpkiValidityRatioAsync(
-        IReadOnlyList<string> prefixes, int maxSample = 5, CancellationToken ct = default)
+        uint asn, IReadOnlyList<string> prefixes, int maxSample = 5, CancellationToken ct = default)
     {
-        if (prefixes.Count == 0) return null;
+        string cacheKey = $"rpki_{asn}";
+        if (_cache != null && _cache.TryGet(cacheKey, out var cached))
+        {
+            // WR-02: битая запись → cache-miss (перезапишется ниже, TryGet-хит больше не блокирует Set).
+            try
+            {
+                var d = JsonSerializer.Deserialize<RpkiCacheData>(cached!);
+                // A cached null ratio is a valid hit (negative caching) — do not fall through.
+                if (d != null) return d.Ratio;
+            }
+            catch (JsonException) { }
+        }
+
         var sample  = prefixes.Take(maxSample).ToList();
-        int valid   = 0;
+        int valid    = 0;
         int checked_ = 0;
+        int failures = 0;
         foreach (var prefix in sample)
         {
             try
@@ -240,9 +294,24 @@ public class RipeStatClient
                 if (r.Data.Status.Equals("valid", StringComparison.OrdinalIgnoreCase))
                     valid++;
             }
-            catch { }
+            // CR-01: отмена пользователя не глотается — иначе Ctrl+C посреди цикла
+            // кэшировал бы ratio из неполных данных.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { failures++; }
         }
-        return checked_ > 0 ? (double)valid / checked_ : null;
+        double? ratio = checked_ > 0 ? (double)valid / checked_ : null;
+
+        // CR-01: «навсегда» кэшируется только авторитетный результат — все сэмплы отвечены
+        // (в т.ч. подлинный null при пустом списке префиксов). Частичный результат (часть
+        // сэмплов упала: rate-limit, таймаут) живёт 1 час — как null у abuse_. Полный сбой
+        // (failures > 0 && checked_ == 0) не кэшируется вовсе: транзиентная недоступность
+        // RIPE Stat не должна замораживаться в rpki_ на 10 лет.
+        if (failures == 0)
+            _cache?.Set(cacheKey, JsonSerializer.Serialize(new RpkiCacheData(ratio)), TimeSpan.FromDays(3650));
+        else if (checked_ > 0)
+            _cache?.Set(cacheKey, JsonSerializer.Serialize(new RpkiCacheData(ratio)), TimeSpan.FromHours(1));
+
+        return ratio;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -24,11 +24,11 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public void Default_CloudOnly_ContainsAllThirteenHyperscalerAsns() // D-05 (+55990 Huawei Cloud China, +37963 Alibaba China)
+    public void Default_CloudOnly_ContainsAllFourteenCloudOnlyAsns() // D-05 (+55990 Huawei Cloud China, +37963 Alibaba China, +21859 Zenlayer edge cloud)
     {
         AsnExclusions.Default.CloudOnlyAsns.Should().BeEquivalentTo(new uint[]
         {
-            16509, 14618, 8075, 15169, 396982, 31898, 36351, 45102, 132203, 45090, 136907, 55990, 37963
+            16509, 14618, 8075, 15169, 396982, 31898, 36351, 45102, 132203, 45090, 136907, 55990, 37963, 21859
         });
     }
 

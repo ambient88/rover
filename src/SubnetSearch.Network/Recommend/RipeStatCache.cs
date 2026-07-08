@@ -90,7 +90,12 @@ public class RipeStatCache
             var dict = _store
                 .Where(kv => kv.Value.ExpiresAt > now)
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
-            await File.WriteAllTextAsync(_path, JsonSerializer.Serialize(dict));
+            // WR-09: атомарная запись через временный файл — обрыв процесса (Ctrl+C,
+            // kill) посреди записи не должен оставлять усечённый JSON и молча
+            // уничтожать весь накопленный кэш при следующей загрузке.
+            var tmp = _path + ".tmp";
+            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(dict));
+            File.Move(tmp, _path, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {

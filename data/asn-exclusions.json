@@ -183,7 +183,7 @@
     {
       "asn": 21859,
       "org": "Zenlayer Inc",
-      "reason": "hyperscaler cloud; visible via --type cloud and server, hidden from --type vps"
+      "reason": "edge cloud (Elastic Compute VMs + bare metal via zenConsole), enterprise-oriented; 87 IX presence saturates the peering score and pushed it to #1 in --type vps; visible via --type cloud and server, hidden from --type vps"
     }
   ],
   "knownAiProviders": [

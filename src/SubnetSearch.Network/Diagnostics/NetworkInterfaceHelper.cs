@@ -20,26 +20,37 @@ public static class NetworkInterfaceHelper
         "pseudo", "teredo", "isatap", "6to4"
     ];
 
+    // Физический интерфейс не меняется за время жизни CLI-процесса, а перечисление
+    // адаптеров стоит десятки миллисекунд — каждый PingAsync дёргал его дважды,
+    // что при сотнях пингов в -r складывалось в секунды. Кэшируем один раз.
+    private static readonly Lazy<(string? Name, IPAddress? Ip)> _physical = new(() =>
+    {
+        // WR-10: Lazy в режиме по умолчанию кэширует исключение фабрики на всю жизнь
+        // процесса — транзиентный сбой перечисления адаптеров превращался бы в
+        // постоянный. Нет NIC-инфо → ping без привязки, bypass-клиент возвращает null.
+        try
+        {
+            var iface = GetPhysicalInterface();
+            var ip = iface?.GetIPProperties().UnicastAddresses
+                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork
+                         && !IPAddress.IsLoopback(a.Address))
+                .Select(a => a.Address)
+                .FirstOrDefault();
+            return (iface?.Name, ip);
+        }
+        catch { return (null, null); }
+    });
+
     /// <summary>
     /// Возвращает имя физического сетевого интерфейса (Ethernet или Wi-Fi),
     /// исключая VPN/tunnel/virtual адаптеры.
     /// </summary>
-    public static string? GetPhysicalInterfaceName()
-        => GetPhysicalInterface()?.Name;
+    public static string? GetPhysicalInterfaceName() => _physical.Value.Name;
 
     /// <summary>
     /// Возвращает IPv4-адрес физического интерфейса для привязки сокетов.
     /// </summary>
-    public static IPAddress? GetPhysicalIpAddress()
-    {
-        var iface = GetPhysicalInterface();
-        if (iface == null) return null;
-        return iface.GetIPProperties().UnicastAddresses
-            .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork
-                     && !IPAddress.IsLoopback(a.Address))
-            .Select(a => a.Address)
-            .FirstOrDefault();
-    }
+    public static IPAddress? GetPhysicalIpAddress() => _physical.Value.Ip;
 
     /// <summary>
     /// Создаёт HttpClient, привязанный к физическому интерфейсу и не использующий

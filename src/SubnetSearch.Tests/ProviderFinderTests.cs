@@ -190,4 +190,34 @@ public class ProviderFinderTests
             totalIpCount: 10_000_000, strictContentFilter: true)
             .Should().BeFalse();
     }
+
+    // ── PeeringDB per-ASN кэш (Phase 10, «ещё быстрее»): pdb_{asn} в ripe_cache ──
+
+    [Fact]
+    public void SerializePdbNet_RoundTripsFoundRecord() // запись существует в PeeringDB
+    {
+        var c = new ProviderCandidate(24940, "Hetzner", "DE", "https://hetzner.com", "Content", 87, null, []);
+        var json = ProviderFinder.SerializePdbNet(c, found: true);
+        var back = ProviderFinder.DeserializePdbNetOrNull(json);
+        back.Should().NotBeNull();
+        back!.Found.Should().BeTrue();
+        back.Name.Should().Be("Hetzner");
+        back.Country.Should().Be("DE");
+        back.InfoType.Should().Be("Content");
+        back.PeeringCount.Should().Be(87);
+    }
+
+    [Fact]
+    public void SerializePdbNet_RoundTripsNotFound() // негативный кэш: записи нет в PeeringDB
+    {
+        var json = ProviderFinder.SerializePdbNet(null, found: false);
+        var back = ProviderFinder.DeserializePdbNetOrNull(json);
+        back.Should().NotBeNull();
+        back!.Found.Should().BeFalse();
+        back.Name.Should().BeNull();
+    }
+
+    [Fact]
+    public void DeserializePdbNetOrNull_ToleratesCorruptJson()
+        => ProviderFinder.DeserializePdbNetOrNull("{ not json ]").Should().BeNull();
 }

@@ -3,6 +3,8 @@ using SubnetSearch.Core.Models.Classification;
 using SubnetSearch.Core.Models.Network;
 using SubnetSearch.Core.Utilities;
 using SubnetSearch.Network.Reputation;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SubnetSearch.Network.Recommend;
 
@@ -38,7 +40,8 @@ public class ProviderScorer(
     PingService          pingService,
     AbuseIpDbClient?     abuseIpDb = null,
     GreyNoiseClient?     greyNoise = null,
-    IIpRangeIndex?       ipIndex   = null)
+    IIpRangeIndex?       ipIndex   = null,
+    RipeStatCache?       ripeCache = null)
 {
     public async Task<IReadOnlyList<ProviderRecommendation>> ScoreAsync(
         IReadOnlyList<ProviderCandidate> candidates,
@@ -96,8 +99,9 @@ public class ProviderScorer(
 
         var results = new System.Collections.Concurrent.ConcurrentBag<ProviderRecommendation>();
 
+        // DoP 40: почти всё время кандидата — ожидание ICMP-таймаутов, не CPU.
         await Parallel.ForEachAsync(topCandidates,
-            new ParallelOptions { MaxDegreeOfParallelism = 20, CancellationToken = ct },
+            new ParallelOptions { MaxDegreeOfParallelism = 40, CancellationToken = ct },
             async (entry, innerCt) =>
             {
                 var (candidate, _, abuserScore, ipsumRatio) = entry;
@@ -112,12 +116,24 @@ public class ProviderScorer(
                 }
 
                 // Fetch real abuser_score via IP-level ipapi.is request.
-                // abuser_score is absent in ASN-level responses — only available per-IP.
+                // abuser_score is absent in ASN-level responses — only available per-IP,
+                // but the score itself is an ASN-level attribute → cache-aside per ASN.
+                // Non-null scores live 7 days; null (API failure or genuinely absent)
+                // only 1 hour so a transient outage isn't frozen into the cache.
                 if (sampleIp != null)
                 {
-                    var ipInfo = await ipapiIs.GetAsnInfoForIpAsync(sampleIp, innerCt);
-                    // Prefer IP-level score; keep Phase-1 null only when IP query also returns null.
-                    abuserScore = ipInfo.AbuserScore ?? abuserScore;
+                    if (ripeCache != null && ripeCache.TryGet($"abuse_{candidate.Asn}", out var cachedAbuse))
+                    {
+                        abuserScore = DeserializeAbuseOrNull(cachedAbuse!) ?? abuserScore;
+                    }
+                    else
+                    {
+                        var ipInfo = await ipapiIs.GetAsnInfoForIpAsync(sampleIp, innerCt);
+                        ripeCache?.Set($"abuse_{candidate.Asn}", SerializeAbuse(ipInfo.AbuserScore),
+                            ipInfo.AbuserScore.HasValue ? TimeSpan.FromDays(7) : TimeSpan.FromHours(1));
+                        // Prefer IP-level score; keep Phase-1 null only when IP query also returns null.
+                        abuserScore = ipInfo.AbuserScore ?? abuserScore;
+                    }
                 }
 
                 // Hard-filter on now-real abuser_score.
@@ -126,17 +142,78 @@ public class ProviderScorer(
 
                 // Try up to 3 prefixes for ICMP ping (latency data — optional).
                 // Providers that don't respond to ICMP still appear in results without latency.
-                string? anchorIp = null;
-                PingStats? ping = null;
+                // The winner is the FIRST anchor IP in prefix order that is alive — same
+                // selection as the old sequential loop, but unknown IPs are probed in parallel
+                // so a fully-silent candidate costs ~1s instead of ~9s.
+                var probeIps = new List<string>(3);
                 foreach (var prefix in candidate.Prefixes.Take(3))
                 {
                     var ip = GetAnchorIp(prefix);
-                    if (ip == null) continue;
-                    var probe = await pingService.PingAsync(ip, count: 3, cancellationToken: innerCt);
-                    if (probe == null) continue;
-                    anchorIp = ip;
-                    ping = probe;
-                    break;
+                    if (ip != null && !probeIps.Contains(ip)) probeIps.Add(ip);
+                }
+
+                // Cache-aside: pingByIp[ip] == null means "known silent" (negative hit).
+                // WR-08: битый JSON — это промах кэша (ключ не добавляется, IP уходит
+                // в пробу и перезаписывает битую запись), а не негативный хит.
+                var pingByIp = new Dictionary<string, PingStats?>(probeIps.Count);
+                foreach (var ip in probeIps)
+                {
+                    if (ripeCache != null && ripeCache.TryGet($"ping_{ip}", out var cachedJson)
+                        && TryDeserializePing(cachedJson!, out var cachedPing))
+                        pingByIp[ip] = cachedPing;
+                }
+
+                // IPs at or past the first cached-alive one cannot change the outcome — skip them.
+                int firstAlive = probeIps.FindIndex(ip => pingByIp.TryGetValue(ip, out var p) && p != null);
+                var toProbe = probeIps
+                    .Where((ip, i) => !pingByIp.ContainsKey(ip) && (firstAlive < 0 || i < firstAlive))
+                    .ToList();
+
+                if (toProbe.Count > 0)
+                {
+                    await Task.WhenAll(toProbe.Select(async ip =>
+                    {
+                        // 1-packet discovery: silent hosts cost 1 timeout, not 3.
+                        // Full 3-packet measurement (real min/avg/max/loss) only for responders;
+                        // a lossy host that answered discovery but not the measurement keeps
+                        // the discovery stats rather than being demoted to silent.
+                        PingStats? probe;
+                        try
+                        {
+                            var discovery = await pingService.PingAsync(ip, count: 1, cancellationToken: innerCt);
+                            probe = discovery == null
+                                ? null
+                                : await pingService.PingAsync(ip, count: 3, cancellationToken: innerCt) ?? discovery;
+                        }
+                        catch (OperationCanceledException) when (innerCt.IsCancellationRequested) { throw; }
+                        catch
+                        {
+                            // WR-03: сбой запуска ping-процесса (Win32Exception: нет бинаря
+                            // в урезанной системе, и т.п.) не должен ронять весь ScoreAsync
+                            // через Task.WhenAll → Parallel.ForEachAsync. Хост трактуется как
+                            // silent для этого прогона, но НЕ кэшируется: сбой окружения —
+                            // не свойство хоста, замораживать его на 12ч нельзя.
+                            lock (pingByIp) pingByIp[ip] = null;
+                            return;
+                        }
+                        // Cache the RAW result (pre-traceroute correction), null included.
+                        // 12h TTL: datacenter latency doesn't drift enough within a day to
+                        // move the concave latency score, and silent hosts stay silent.
+                        ripeCache?.Set($"ping_{ip}", SerializePingOrNull(probe), TimeSpan.FromHours(12));
+                        lock (pingByIp) pingByIp[ip] = probe;
+                    }));
+                }
+
+                string? anchorIp = null;
+                PingStats? ping = null;
+                foreach (var ip in probeIps)
+                {
+                    if (pingByIp.TryGetValue(ip, out var p) && p != null)
+                    {
+                        anchorIp = ip;
+                        ping = p;
+                        break;
+                    }
                 }
 
                 // TCP RST timing is valid but may hit CDN edge — try traceroute for real DC latency.
@@ -278,6 +355,40 @@ public class ProviderScorer(
         double score  = components.Sum(c => c.value * c.weight / totalW);
 
         return (score, new ScoreBreakdown(ls, ps, abs, ss, rpkiScore));
+    }
+
+    // Wrapper so a null PingStats (silent host) round-trips unambiguously through the cache.
+    private record PingCacheData(
+        [property: JsonPropertyName("p")] PingStats? Ping);
+
+    internal static string SerializePingOrNull(PingStats? p)
+        => JsonSerializer.Serialize(new PingCacheData(p));
+
+    // Corrupt JSON is treated as "no cached data" (swallow-and-fallback convention).
+    internal static PingStats? DeserializePingOrNull(string json)
+        => TryDeserializePing(json, out var stats) ? stats : null;
+
+    // WR-08: Try-паттерн дизамбигуирует «битый JSON» и «настоящий негативный хит»:
+    // false → JsonException (call-site трактует как промах кэша: IP уходит в пробу
+    // и перезаписывает битую запись); true + stats == null → хост молчит (не пинговать).
+    internal static bool TryDeserializePing(string json, out PingStats? stats)
+    {
+        try { stats = JsonSerializer.Deserialize<PingCacheData>(json)?.Ping; return true; }
+        catch (JsonException) { stats = null; return false; }
+    }
+
+    // Wrapper so a null abuser_score round-trips unambiguously through the cache.
+    private record AbuseCacheData(
+        [property: JsonPropertyName("a")] double? Score);
+
+    internal static string SerializeAbuse(double? score)
+        => JsonSerializer.Serialize(new AbuseCacheData(score));
+
+    // Corrupt JSON is treated as "no data" (swallow-and-fallback convention).
+    internal static double? DeserializeAbuseOrNull(string json)
+    {
+        try { return JsonSerializer.Deserialize<AbuseCacheData>(json)?.Score; }
+        catch (JsonException) { return null; }
     }
 
     internal static string? GetAnchorIp(string cidr)

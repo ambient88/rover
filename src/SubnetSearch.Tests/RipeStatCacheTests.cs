@@ -65,6 +65,74 @@ public class RipeStatCacheTests
         finally { Directory.Delete(dir.FullName, true); }
     }
 
+    // ── Негативное кэширование BGPView-фолбэка (gap closure Phase 10) ──
+    // RipeStatClient.MarkEmpty/IsKnownEmpty: ASN, пустой и в RIPE Stat, и в BGPView,
+    // помечается pfx0_{asn} и не дёргает троттлённый фолбэк в окне TTL.
+
+    [Fact]
+    public void MarkEmpty_IsKnownEmpty_RoundTrip()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var cache  = new RipeStatCache(dir.FullName);
+            var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
+
+            client.IsKnownEmpty(64512).Should().BeFalse("маркер ещё не ставился");
+            client.MarkEmpty(64512);
+            client.IsKnownEmpty(64512).Should().BeTrue("после MarkEmpty фолбэк пропускается");
+            client.IsKnownEmpty(64513).Should().BeFalse("маркер индивидуален per-ASN");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
+    [Fact]
+    public void IsKnownEmpty_WithoutCache_AlwaysFalse()
+    {
+        // Без кэша (cache-less конструирование) фолбэк никогда не пропускается.
+        var client = new SubnetSearch.Network.RipeStatClient(new HttpClient());
+        client.MarkEmpty(64512); // no-op, не должен бросить
+        client.IsKnownEmpty(64512).Should().BeFalse();
+    }
+
+    [Fact]
+    public void MarkEmpty_ShortTtl_ExpiresIndependently()
+    {
+        // WR-01: неподтверждённая пустота (источник сбоил) — короткий маркер:
+        // защищает троттленный BGPView от повторов в каждом прогоне, но не
+        // замораживает здоровый ASN на сутки. Истёкший TTL → маркер невидим.
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var cache  = new RipeStatCache(dir.FullName);
+            var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
+
+            client.MarkEmpty(64512, TimeSpan.FromHours(1));
+            client.IsKnownEmpty(64512).Should().BeTrue("часовой маркер активен");
+
+            client.MarkEmpty(64513, TimeSpan.FromMilliseconds(-1)); // уже истёк
+            client.IsKnownEmpty(64513).Should().BeFalse("истёкший маркер = отсутствие маркера");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
+    [Fact]
+    public void CachePrefixes_WritesUnderSamePfxKey()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var cache  = new RipeStatCache(dir.FullName);
+            var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
+
+            client.CachePrefixes(64512, ["192.0.2.0/24"], ["2001:db8::/32"]);
+            // Результат фолбэка ложится под тот же pfx_-ключ, что и обычный RIPE-ответ.
+            cache.TryGet("pfx_64512", out var data).Should().BeTrue();
+            data.Should().Contain("192.0.2.0/24").And.Contain("2001:db8::/32");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
     [Fact]
     public async Task FlushIfDirtyAsync_EvictsExpired_KeepsLive_AcrossReload()
     {

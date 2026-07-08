@@ -1,4 +1,4 @@
-using SubnetSearch.Classification;
+﻿using SubnetSearch.Classification;
 using SubnetSearch.Network;
 using SubnetSearch.Cli.Config;
 using SubnetSearch.Core.Models.Data;
@@ -130,6 +130,7 @@ public static class AppBootstrap
                     t.StopTask();
                 }
             });
+
 
         Console.WriteLine("\nDownload complete.\n");
 
