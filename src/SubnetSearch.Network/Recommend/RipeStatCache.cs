@@ -77,7 +77,7 @@ public class RipeStatCache
 
     public async Task FlushIfDirtyAsync()
     {
-        // Read _dirty first without clearing: if the write fails we restore it below.
+        // Atomically claim the dirty flag (1 → 0); restored below if the write fails.
         if (Interlocked.CompareExchange(ref _dirty, 0, 1) == 0) return;
         try
         {

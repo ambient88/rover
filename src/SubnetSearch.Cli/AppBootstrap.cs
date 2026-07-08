@@ -93,8 +93,13 @@ public static class AppBootstrap
                                 cancellationToken: cts.Token);
                             // Files that succeeded on the first pass keep their result;
                             // failed ones take the outcome of the bypass retry.
+                            // IN-04: контракт DownloadAllDetailedAsync не гарантирован на
+                            // границе модуля — если retry-набор не содержит файла, оставляем
+                            // исходный результат вместо InvalidOperationException из First.
                             results = results
-                                .Select(r => r.Success ? r : retryResults.First(x => x.FileName == r.FileName))
+                                .Select(r => r.Success
+                                    ? r
+                                    : retryResults.FirstOrDefault(x => x.FileName == r.FileName) ?? r)
                                 .ToList();
                         }
                     }

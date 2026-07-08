@@ -17,10 +17,22 @@ public static class IpListAnalyzer
             .Distinct()
             .ToList();
 
+    // Per-attempt timeout: a DPI-blackholed host (SYN dropped) must not hang the run
+    // for HttpClient's default 100s before the second route even gets a chance.
+    private static readonly TimeSpan FetchAttemptTimeout = TimeSpan.FromSeconds(20);
+
     // Reads text from a local file path or HTTP/HTTPS URL.
     // Automatically rewrites GitHub blob URLs to raw.githubusercontent.com.
+    //
+    // Двухмаршрутная загрузка URL (зеркало стратегии AppBootstrap для data-файлов):
+    // основной клиент — bypass-VPN (привязан к физическому интерфейсу), fallbackHttp —
+    // системный маршрут (VPN, если активен). Один маршрут не покрывает оба случая:
+    // провайдер блокирует часть хостов напрямую (raw.githubusercontent.com — SYN
+    // blackhole, «The SSL connection could not be established»), а часть хостов
+    // блокирует выходные адреса VPN.
     public static async Task<string> ReadSourceAsync(
-        string pathOrUrl, HttpClient http, CancellationToken ct = default)
+        string pathOrUrl, HttpClient http, CancellationToken ct = default,
+        HttpClient? fallbackHttp = null)
     {
         if (pathOrUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             pathOrUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
@@ -32,7 +44,19 @@ public static class IpListAnalyzer
                 throw new ArgumentException(
                     $"--from does not accept direct IP URLs to prevent SSRF. Use a hostname instead.");
 
-            return await http.GetStringAsync(RewriteGitHubUrl(pathOrUrl), ct);
+            var url = RewriteGitHubUrl(pathOrUrl);
+            try
+            {
+                return await FetchWithTimeoutAsync(http, url, ct);
+            }
+            // Сетевой сбой первой попытки (включая её 20с-таймаут) → вторая попытка
+            // другим маршрутом. Отмена пользователем (Ctrl+C) не перехватывается.
+            catch (Exception ex) when (
+                fallbackHttp != null && !ct.IsCancellationRequested &&
+                ex is HttpRequestException or OperationCanceledException)
+            {
+                return await FetchWithTimeoutAsync(fallbackHttp, url, ct);
+            }
         }
 
         // Resolve to absolute path to expose any traversal attempts in error messages,
@@ -45,6 +69,14 @@ public static class IpListAnalyzer
                 $"--from supports only .txt and .csv files, got: {ext}");
 
         return await File.ReadAllTextAsync(fullPath, ct);
+    }
+
+    private static async Task<string> FetchWithTimeoutAsync(
+        HttpClient http, string url, CancellationToken ct)
+    {
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attemptCts.CancelAfter(FetchAttemptTimeout);
+        return await http.GetStringAsync(url, attemptCts.Token);
     }
 
     // Rewrites GitHub blob URLs to raw format so we get plain text, not HTML.

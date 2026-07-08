@@ -190,99 +190,99 @@
     {
       "asn": 33425,
       "org": "CoreWeave, Inc.",
-      "note": "GPU-only cloud, no general-purpose VPS"
+      "reason": "GPU-only cloud, no general-purpose VPS"
     },
     {
       "asn": 398090,
       "org": "Lambda Labs",
-      "note": "GPU cloud for AI/ML"
+      "reason": "GPU cloud for AI/ML"
     },
     {
       "asn": 26356,
       "org": "Crusoe Energy Systems (Crusoe Cloud)",
-      "note": "Sustainable GPU cloud"
+      "reason": "Sustainable GPU cloud"
     },
     {
       "asn": 399507,
       "org": "Crusoe Energy Systems (Crusoe Cloud)",
-      "note": "Additional ASN"
+      "reason": "Additional ASN"
     },
     {
       "asn": 401405,
       "org": "Crusoe Energy Systems (Crusoe Cloud)",
-      "note": "Additional ASN"
+      "reason": "Additional ASN"
     },
     {
       "asn": 46082,
       "org": "Voltage Park, Inc.",
-      "note": "GPU cloud, ~24K NVIDIA H100/B200"
+      "reason": "GPU cloud, ~24K NVIDIA H100/B200"
     },
     {
       "asn": 401182,
       "org": "Applied Digital Corporation (APLD)",
-      "note": "AI data center and GPU cloud"
+      "reason": "AI data center and GPU cloud"
     },
     {
       "asn": 204415,
       "org": "NexGen Cloud / Hyperstack",
-      "note": "GPU-as-a-Service platform"
+      "reason": "GPU-as-a-Service platform"
     },
     {
       "asn": 214438,
       "org": "NexGen Cloud / Hyperstack",
-      "note": "Additional ASN"
+      "reason": "Additional ASN"
     },
     {
       "asn": 23112,
       "org": "Fluidstack",
-      "note": "Distributed GPU compute aggregator"
+      "reason": "Distributed GPU compute aggregator"
     },
     {
       "asn": 209045,
       "org": "Genesis Cloud",
-      "note": "European GPU cloud"
+      "reason": "European GPU cloud"
     },
     {
       "asn": 50489,
       "org": "Ori Industries (Ori Cloud)",
-      "note": "UK AI GPU cloud (Oriedge)"
+      "reason": "UK AI GPU cloud (Oriedge)"
     },
     {
       "asn": 400494,
       "org": "Cirrascale Cloud Services",
-      "note": "AI/ML GPU cloud"
+      "reason": "AI/ML GPU cloud"
     },
     {
       "asn": 199524,
       "org": "Gcore",
-      "note": "Global GPU cloud with H100/H200 nodes"
+      "reason": "Global GPU cloud with H100/H200 nodes"
     },
     {
       "asn": 202422,
       "org": "Gcore (Ghost)",
-      "note": "Additional ASN, Luxembourg"
+      "reason": "Additional ASN, Luxembourg"
     },
     {
       "asn": 59245,
       "org": "Gcore",
-      "note": "Additional ASN"
+      "reason": "Additional ASN"
     },
     {
       "asn": 198020,
       "org": "Verda / DataCrunch",
-      "note": "European GPU cloud, rebranded from DataCrunch"
+      "reason": "European GPU cloud, rebranded from DataCrunch"
     }
   ],
   "knownCdns": [
     {
       "asn": 13335,
       "org": "Cloudflare",
-      "note": "ipapi.is misclassifies as hosting"
+      "reason": "ipapi.is misclassifies as hosting"
     },
     {
       "asn": 20940,
       "org": "Akamai Technologies",
-      "note": "ipapi.is misclassifies as hosting"
+      "reason": "ipapi.is misclassifies as hosting"
     },
     {
       "asn": 54113,
@@ -303,7 +303,7 @@
     {
       "asn": 12041,
       "org": "Afilias / Identity Digital",
-      "note": "TLD registry, not a hosting provider"
+      "reason": "TLD registry, not a hosting provider"
     }
   ]
 }

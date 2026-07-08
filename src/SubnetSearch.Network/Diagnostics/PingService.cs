@@ -1,6 +1,5 @@
 using SubnetSearch.Core.Interfaces.Classification;
 using SubnetSearch.Core.Models.Classification;
-using SubnetSearch.Core.Utilities;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -114,29 +113,6 @@ public partial class PingService : IPingService
                 double.Parse(rttMatch.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture),
                 loss);
         }
-    }
-
-    public async Task<PingStats?> PingViaTracerouteAsync(
-        string host, uint targetAsn, IIpRangeIndex ipIndex, CancellationToken ct = default)
-    {
-        var tracer = new TracerouteService();
-        IReadOnlyList<TracerouteHop> hops;
-        try { hops = await tracer.TraceAsync(host, ct); }
-        catch (Exception e) when (e is not OperationCanceledException) { return null; }
-        if (hops.Count == 0) return null;
-
-        double? targetMs  = null;
-        double? lastKnownMs = null;
-        foreach (var hop in hops)
-        {
-            if (hop.LatencyMs.HasValue) lastKnownMs = hop.LatencyMs;
-            if (hop.IpAddress == null) continue;
-            if (!IpConverter.TryIpToUint(hop.IpAddress, out uint ipUint)) continue;
-            var record = ipIndex.Find(ipUint);
-            if (record?.Asn == targetAsn) { targetMs = hop.LatencyMs ?? lastKnownMs; break; }
-        }
-        if (targetMs == null) return null;
-        return new PingStats(targetMs.Value, targetMs.Value, targetMs.Value, PacketLoss: 0, IsTcp: false);
     }
 
     internal static async Task<string> RunAsync(string cmd, string args, CancellationToken ct)
