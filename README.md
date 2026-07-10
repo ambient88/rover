@@ -5,6 +5,7 @@
 [![Version](https://img.shields.io/badge/version-0.0.1-green.svg)](https://github.com/ambient88/rover/releases)
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple.svg)](https://dotnet.microsoft.com/download)
 [![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-lightgrey.svg)]()
+[![codecov](https://codecov.io/gh/ambient88/rover/graph/badge.svg)](https://codecov.io/gh/ambient88/rover)
 
 A CLI tool for classifying IP addresses, domains, and subnets. Identifies hosting providers, geolocation, reputation, network characteristics, and ranks providers worldwide.
 
