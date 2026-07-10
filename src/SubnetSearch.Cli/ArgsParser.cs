@@ -16,7 +16,8 @@ public static class ArgsParser
         if (args.Length == 0) return (true, null);
 
         // Find the primary mode flag anywhere in args (allows flags before the mode).
-        string[] knownModes = ["-a", "-d", "-c", "-l", "-o", "-r"];
+        // "update" — verb провижининга данных (rover update): не требует позиционного аргумента.
+        string[] knownModes = ["-a", "-d", "-c", "-l", "-o", "-r", "update"];
         string mode = args.Select(a => a.ToLower())
                           .FirstOrDefault(a => knownModes.Contains(a))
                       ?? args[0].ToLower();

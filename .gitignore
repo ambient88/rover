@@ -55,4 +55,5 @@ nunit-*.xml
 /data/*
 !/data/asn-exclusions.json
 !/data/server-providers.json
+!/data/server-providers.curated.json
 # server-providers.local.json — личные правки, не коммитим (остаётся под /data/*)

@@ -161,4 +161,124 @@ public class ProviderFinderTests
         kept.Should().NotContain(31027, "карьер не в ядре");
         kept.Should().NotContain(215439, "vpsh-хвост больше не проходит автоматически");
     }
+
+    [Theory]
+    [InlineData("hosting")] // BL-01: hosting — алиас server, должен применять allowlist
+    [InlineData("HOSTING")]
+    [InlineData("Server")]  // WR-01: регистр
+    [InlineData("SERVER")]
+    public async Task ApplyServerAllowlist_HostingAndCaseAliases_ApplyAllowlist(string type)
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sp-{Guid.NewGuid():N}.json");
+        File.WriteAllText(basePath, """{"providers":[{"asn":24940,"name":"Hetzner","types":["vps"]}]}""");
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
+        File.Delete(basePath);
+
+        var candidates = new[]
+        {
+            new ProviderCandidate(24940, "Hetzner", "DE", null, "Content", 1, null, []),
+            new ProviderCandidate(31027, "GlobalConnect", "DK", null, "NSP", 1, null, []),
+        };
+
+        var kept = ProviderFinder.ApplyServerAllowlist(candidates, type, sp)
+                                 .Select(c => c.Asn).ToHashSet();
+
+        kept.Should().Contain(24940, "ядро видно под алиасом server");
+        kept.Should().NotContain(31027, $"allowlist применён для --type {type}");
+    }
+
+    [Theory]
+    [InlineData("cdn")]
+    [InlineData("nsp")]
+    [InlineData("ai")]
+    [InlineData(null)]
+    public async Task ApplyServerAllowlist_NonServerTypes_ReturnInputUnchanged(string? type)
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sp-{Guid.NewGuid():N}.json");
+        File.WriteAllText(basePath, """{"providers":[{"asn":24940,"name":"Hetzner","types":["vps"]}]}""");
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
+        File.Delete(basePath);
+
+        var candidates = new[]
+        {
+            new ProviderCandidate(24940, "Hetzner", "DE", null, "Content", 1, null, []),
+            new ProviderCandidate(31027, "GlobalConnect", "DK", null, "NSP", 1, null, []),
+        };
+
+        var kept = ProviderFinder.ApplyServerAllowlist(candidates, type, sp)
+                                 .Select(c => c.Asn).ToHashSet();
+
+        kept.Should().BeEquivalentTo(new uint[] { 24940, 31027 }, "не-server тип не трогает набор");
+    }
+
+    [Theory]
+    [InlineData("vps",       null,        false, true)]   // server + global + no from → core-first
+    [InlineData("server",    null,        false, true)]
+    [InlineData("cloud",     null,        false, true)]
+    [InlineData("dedicated", null,        false, true)]
+    [InlineData("VPS",       null,        false, true)]   // регистр
+    [InlineData("vps",       "Frankfurt", false, false)]  // region → нет
+    [InlineData("vps",       null,        true,  false)]  // --from → нет
+    [InlineData("cdn",       null,        false, false)]  // не-server → нет
+    [InlineData("nsp",       null,        false, false)]
+    [InlineData(null,        null,        false, false)]  // без типа → нет
+    public void UseCoreFirstSource_Matrix(string? type, string? region, bool hasFrom, bool expected)
+        => ProviderFinder.UseCoreFirstSource(type, region, hasFrom).Should().Be(expected);
+
+    [Fact]
+    public void BackfillNameStubs_AddsOnlyMissingCoreAsns() // W2: core-член не теряется при 429
+    {
+        var asnList = new (uint Asn, int Coverage)[] { (100, 5), (200, 3), (300, 0) };
+        var existing = new HashSet<uint> { 100 };                       // 100 уже дал кандидата
+        var names = new Dictionary<uint, string> { [200] = "Host-B", [300] = "Host-C" };
+
+        var stubs = ProviderFinder.BackfillNameStubs(asnList, existing, names);
+
+        // 100 пропущен (уже есть); 200 и 300 добираются стабом с именем и покрытием.
+        stubs.Select(s => s.Asn).Should().BeEquivalentTo(new uint[] { 200, 300 });
+        stubs.First(s => s.Asn == 200).Name.Should().Be("Host-B");
+        stubs.First(s => s.Asn == 200).CoverageCount.Should().Be(3);
+    }
+
+    [Fact]
+    public void BackfillNameStubs_NonCoreAsnCannotEnter() // не-core (нет в nameFallback) не добавляется
+    {
+        var asnList = new (uint Asn, int Coverage)[] { (999, 10) };     // не в nameFallback
+        var stubs = ProviderFinder.BackfillNameStubs(asnList, new HashSet<uint>(),
+            new Dictionary<uint, string> { [200] = "Host-B" });
+        stubs.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BackfillNameStubs_NullFallback_ReturnsEmpty()
+        => ProviderFinder.BackfillNameStubs(
+               new (uint, int)[] { (100, 1) }, new HashSet<uint>(), null).Should().BeEmpty();
+
+    [Theory]
+    [InlineData("10.0.0.0/24", 256)]
+    [InlineData("10.0.0.0/32", 1)]
+    [InlineData("1.2.3.0-1.2.3.99", 100)]   // невыровненный диапазон из ip2asn
+    [InlineData("1.2.3.4-1.2.3.4", 1)]
+    [InlineData("garbage", 1)]              // мусор → 1 (без падения)
+    public void CountIpsInCidr_HandlesCidrAndRanges(string s, long expected)
+        => ProviderFinder.CountIpsInCidr(s).Should().Be(expected);
+
+    [Fact]
+    public void FilterAsnsByCountry_IntersectsCountries()
+    {
+        var map = new Dictionary<uint, HashSet<string>>
+        {
+            [1] = new(StringComparer.OrdinalIgnoreCase) { "RU", "NL" },
+            [2] = new(StringComparer.OrdinalIgnoreCase) { "DE" },
+            [3] = new(StringComparer.OrdinalIgnoreCase),          // без страны
+        };
+        uint[] input = [1, 2, 3, 99];                            // 99 — вне карты
+
+        ProviderFinder.FilterAsnsByCountry(input, map, ["RU"])
+            .Should().BeEquivalentTo(new uint[] { 1 });
+        ProviderFinder.FilterAsnsByCountry(input, map, ["de", "nl"]) // регистр
+            .Should().BeEquivalentTo(new uint[] { 1, 2 });
+        ProviderFinder.FilterAsnsByCountry(input, map, [])           // нет кодов → все на входе
+            .Should().BeEquivalentTo(new uint[] { 1, 2, 3, 99 });
+    }
 }

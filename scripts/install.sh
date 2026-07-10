@@ -56,4 +56,16 @@ fi
 
 echo ""
 echo "rover installed: ${INSTALL_DIR}/${BINARY_NAME}"
-echo "Run 'rover' to get started. Data files are downloaded on first run."
+
+# ── Download data files now, with progress (rover update) ────────────────────
+# Best-effort: if this fails (e.g. offline), the first real run auto-fetches them.
+echo ""
+echo "Downloading data files..."
+if "${INSTALL_DIR}/${BINARY_NAME}" update; then
+    echo ""
+    echo "Setup complete. Run 'rover' to get started."
+else
+    echo ""
+    echo "Data download did not complete — it will be retried automatically on first run."
+    echo "You can also run 'rover update' manually. Run 'rover' to get started."
+fi

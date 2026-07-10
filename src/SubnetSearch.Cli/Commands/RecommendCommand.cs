@@ -158,6 +158,9 @@ public sealed class RecommendCommand(
         bool needsHostingFilter = ProviderFinder.ShouldExcludeCdn(typeFilter);
         bool needsAiExclusion   = ProviderFinder.ShouldExcludeAi(typeFilter);
         bool aiOnly             = ProviderFinder.ShouldFilterAiOnly(typeFilter);
+        // core-first: для global server-типа без --from кандидаты берём из ядра, а не из
+        // широкого PeeringDB-pull (иначе обогащаем ~1448 сетей, чтобы оставить единицы).
+        bool useCoreFirst       = ProviderFinder.UseCoreFirstSource(typeFilter, region, fromAsnList.Count > 0);
         IReadOnlyList<(uint Asn, int Count)>? localHostingAsns = null;
 
         await AnsiConsole.Status()
@@ -165,49 +168,81 @@ public sealed class RecommendCommand(
             {
                 IReadOnlyList<ProviderCandidate> candidates;
 
-                if (isGlobal && needsHostingFilter)
+                if (useCoreFirst)
                 {
-                    // --type server: single bulk PeeringDB request + local whitelist.
-                    //
-                    // BULK PeeringDB fetch (3 requests: Content/NSP/Hosting) with pre-filter:
-                    //   - Local whitelist ASNs → pass without ipapi.is call (confirmed hosting files).
-                    //   - All others → must have ipapi.is type "hosting" or "cloud".
-                    //   Rejects: Disney, TELE2, Sony, Meta, Cisco (isp/cdn/null → rejected).
-                    //
-                    // SUPPLEMENT: local ASNs not in PeeringDB's top-N → RIPE Stat fallback (up to 40).
-                    ctx.Status("Loading confirmed hosting providers from local databases...");
-                    localHostingAsns = await GetLocalHostingAsnsAsync(dataDir);
-                    var localWhitelist = new HashSet<uint>(localHostingAsns.Select(a => a.Asn));
+                    // core-first: кандидаты — только ядро (server-providers.json), обогащаем per-ASN.
+                    // Ни широкого PeeringDB-pull, ни RIPE-country-supplement: RIPE грузится на
+                    // десятки ASN ядра, а не на 1448 сетей → устойчиво и полно.
+                    var coreAsnSet = new HashSet<uint>(serverProviders.CoreAsnsForType(typeFilter));
 
-                    ctx.Status("Fetching providers from PeeringDB (3 bulk requests)...");
-                    candidates = [.. await finder.FindGlobalAsync(
-                        countryCodes, topN: Math.Max(returnTop * 15, 1000), infoTypes: infoTypes,
-                        excludeCdn: true, excludeAi: needsAiExclusion, aiOnly: aiOnly,
-                        localHostingWhitelist: localWhitelist,
-                        onPreEnrichment: (perType, errors, total) =>
-                        {
-                            diagnosticPerType   = perType;
-                            diagnosticErrors    = errors;
-                            diagnosticPreEnrich = total;
-                        },
-                        onStatus: msg => ctx.Status(msg),
-                        ct: ct)];
-
-                    // Supplement: local ASNs missed by the top-N bulk result.
-                    var foundAsns = new HashSet<uint>(candidates.Select(c => c.Asn));
-                    var missing   = localHostingAsns
-                        .Where(a => !foundAsns.Contains(a.Asn))
-                        .Take(Math.Max(returnTop, 40))
-                        .ToList();
-                    if (missing.Count > 0)
+                    // Локальная карта ASN→страны из ip2asn (только для ASN ядра — дёшево).
+                    var asnToCountries = new Dictionary<uint, HashSet<string>>();
+                    foreach (var r in ip2asnRecords)
                     {
-                        ctx.Status($"Supplementing {missing.Count} local providers via RIPE Stat...");
-                        var extra = await finder.FindByAsnListAsync(
-                            missing, infoTypes: null, excludeCdn: needsHostingFilter,
-                            excludeAi: needsAiExclusion,
-                            localHostingWhitelist: localWhitelist, ct: ct);
-                        candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
+                        if (!coreAsnSet.Contains(r.Asn) || string.IsNullOrWhiteSpace(r.Country)) continue;
+                        if (!asnToCountries.TryGetValue(r.Asn, out var set))
+                            asnToCountries[r.Asn] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        set.Add(r.Country);
                     }
+
+                    var coreAsns = ProviderFinder.FilterAsnsByCountry(
+                        coreAsnSet, asnToCountries, countryCodes ?? []);
+                    var coreKeep = new HashSet<uint>(coreAsns);
+                    var coreList = coreAsns.Select(a => (Asn: a, Coverage: 0)).ToList();
+                    // Имена из ядра — чтобы кандидат не терялся, когда PeeringDB+RIPE молчат.
+                    var coreNames = serverProviders.CoreEntriesForType(typeFilter)
+                        .Where(e => coreKeep.Contains(e.Asn))
+                        .ToDictionary(e => e.Asn, e => e.Name);
+                    diagnosticPreEnrich = coreList.Count;
+
+                    if (coreList.Count == 0)
+                    {
+                        candidates = [];
+                    }
+                    else
+                    {
+                        ctx.Status($"Enriching {coreList.Count} curated providers via RIPE Stat...");
+                        // excludeCdn/excludeAi=false: рантайм-хард-блоки CDN/AI здесь не нужны —
+                        // ядро УЖЕ очищено от CDN/AI при генерации (asn-exclusions прополкой). Инвариант
+                        // держится генератором; обновление asn-exclusions требует регенерации ядра.
+                        var coreFallback = BuildIp2AsnPrefixes(ip2asnRecords, coreKeep);
+                        candidates = await finder.FindByAsnListAsync(
+                            coreList, infoTypes: null, excludeCdn: false, excludeAi: false,
+                            localHostingWhitelist: coreKeep,
+                            localPrefixFallback: coreFallback, nameFallback: coreNames, ct: ct);
+                    }
+                    diagnosticAfterRipe = candidates.Count;
+                }
+                else if (isGlobal && needsHostingFilter)
+                {
+                    // server-тип С --from: кандидаты = ASN из списка, входящие в ядро по типу
+                    // (ВСЕ пересечение, не top-N по покрытию). Обогащаем только их; широкого
+                    // PeeringDB-pull нет. Coverage из списка сохраняем для аннотации.
+                    var coreForType = new HashSet<uint>(serverProviders.CoreAsnsForType(typeFilter));
+                    var fromCore = fromAsnList
+                        .Where(a => coreForType.Contains(a.Asn))
+                        .Select(a => (Asn: a.Asn, Coverage: a.Count))
+                        .ToList();
+                    var fromKeep = new HashSet<uint>(fromCore.Select(a => a.Asn));
+                    var fromNames = serverProviders.CoreEntriesForType(typeFilter)
+                        .Where(e => fromKeep.Contains(e.Asn))
+                        .ToDictionary(e => e.Asn, e => e.Name);
+                    diagnosticPreEnrich = fromCore.Count;
+
+                    if (fromCore.Count == 0)
+                    {
+                        candidates = [];
+                    }
+                    else
+                    {
+                        ctx.Status($"Enriching {fromCore.Count} curated providers from --from list via RIPE Stat...");
+                        var fromFallback = BuildIp2AsnPrefixes(ip2asnRecords, fromKeep);
+                        candidates = await finder.FindByAsnListAsync(
+                            fromCore, infoTypes: null, excludeCdn: false, excludeAi: false,
+                            localHostingWhitelist: fromKeep,
+                            localPrefixFallback: fromFallback, nameFallback: fromNames, ct: ct);
+                    }
+                    diagnosticAfterRipe = candidates.Count;
                 }
                 else if (isGlobal)
                 {
@@ -255,7 +290,9 @@ public sealed class RecommendCommand(
                 // media/CDN networks are still excluded when --type server is active.
                 // The hosting filter uses balanced mode (null ipapi.is type + ≥1024 IPs passes),
                 // so legitimate cloud providers like Yandex Cloud pass even when ipapi.is is down.
-                if (fromAsnList.Count > 0)
+                // Для server-типов список --from уже учтён выше (пересечение с ядром);
+                // здесь supplement только для не-server (--from без типа / cdn / nsp).
+                if (fromAsnList.Count > 0 && !ProviderFinder.IsServerTypeFilter(typeFilter))
                 {
                     var foundAsnsSet = new HashSet<uint>(candidates.Select(c => c.Asn));
                     var missing = fromAsnList
@@ -300,7 +337,7 @@ public sealed class RecommendCommand(
                 // RIPE Stat country-ASN supplement: recover hosting providers registered in the
                 // target countries that PeeringDB's top-N bulk query did not include.
                 // Only runs when --country is specified and the search is global (not region-based).
-                if (countryCodes is { Length: > 0 } && isGlobal)
+                if (countryCodes is { Length: > 0 } && isGlobal && !useCoreFirst)
                 {
                     var foundAsns           = new HashSet<uint>(candidates.Select(c => c.Asn));
                     var updatedCacheEntries = new Dictionary<string, IReadOnlyList<uint>>();
@@ -586,6 +623,22 @@ public sealed class RecommendCommand(
     }
 
     // ================== HELPERS ==================
+    // asn → список CIDR/диапазонов из ip2asn (fallback префиксов, когда RIPE/BGPView молчат).
+    // Строится только для нужного набора ASN — один проход по ip2asnRecords.
+    private static Dictionary<uint, IReadOnlyList<string>> BuildIp2AsnPrefixes(
+        IReadOnlyList<SubnetSearch.Core.Models.Classification.Ip2AsnRecord> records, HashSet<uint> asns)
+    {
+        var acc = new Dictionary<uint, List<string>>();
+        foreach (var r in records)
+        {
+            if (!asns.Contains(r.Asn)) continue;
+            if (!acc.TryGetValue(r.Asn, out var list))
+                acc[r.Asn] = list = new List<string>();
+            list.Add(SubnetSearch.Core.Utilities.IpConverter.ToCidr(r.StartIp, r.EndIp));
+        }
+        return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<string>)kv.Value);
+    }
+
     // Extracts hosting ASNs from local datacenter databases (ipcat, cloud-provider, server-ip-addresses).
     // Used to supplement PeeringDB discovery for providers not in PeeringDB's top-N by IX count.
     private static async Task<IReadOnlyList<(uint Asn, int Count)>> GetLocalHostingAsnsAsync(string dataDir)

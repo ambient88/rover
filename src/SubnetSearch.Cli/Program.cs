@@ -101,6 +101,11 @@ if (args.Length == 0)
     return 0;
 }
 
+// `update` — единственная задача была провижининг данных (Visible-режим уже отработал
+// в AppBootstrap). Дальше запускать нечего — выходим до PeeringDB-инициализации и роутинга.
+if (args[0].Equals("update", StringComparison.OrdinalIgnoreCase))
+    return 0;
+
 string mode     = args[0].ToLower();
 string argument = args.Length > 1 ? args[1] : string.Empty;
 

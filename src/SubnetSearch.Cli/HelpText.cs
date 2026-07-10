@@ -32,6 +32,9 @@ public static class HelpText
         AnsiConsole.MarkupLine("  --preset <name>      Scoring preset: balanced (default), performance, security");
         AnsiConsole.MarkupLine("  --trace-to <ip>      Run traceroute to IP and mark providers seen in the route");
         Console.WriteLine();
+        AnsiConsole.MarkupLine("[yellow]Data:[/]");
+        AnsiConsole.MarkupLine("  update               Download / refresh data files with progress (run after install; auto on first run)");
+        Console.WriteLine();
         AnsiConsole.MarkupLine("[yellow]Configure:[/]");
         AnsiConsole.MarkupLine("  --set-key peeringdb=KEY      Save PeeringDB API key (free at peeringdb.com — fixes rate limits on -r)");
         AnsiConsole.MarkupLine("  --set-key abuseipdb=KEY      Save AbuseIPDB API key (free at abuseipdb.com)");

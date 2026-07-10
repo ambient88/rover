@@ -1,67 +1,66 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using SubnetSearch.Classification;
 
-// Coverage checker for the server-providers allowlist (no hardcoded brand knowledge).
-//
-// The runtime long-tail gate drops every transit-role ASN that is not listed in the core
-// (server-providers.json). A rentable provider with a transit networkRole therefore must be
-// listed explicitly, or it silently disappears from the server filters. This tool reports
-// transit-role vpsh-tagged ASNs that are NOT yet in the core, sorted by reach ascending
-// (smaller networks first - the ones most likely to be a real host worth adding rather than
-// a large carrier). The maintainer reviews the output and edits server-providers.json by hand.
+// Генератор курируемого ядра server-providers.json из локальных данных (ноль сети):
+//   base = bgp.tools vpsh-тег, отфильтрованный от карьеров/CDN/AI (ServerCoreBootstrap.PassesPrune),
+//          тип по умолчанию ["vps","dedicated"];
+//   overlay = data/server-providers.curated.json (ручной: cloud-типы, коррекции, add / []-remove).
+// Выход: data/server-providers.json (перезапись). Коммитит пользователь.
 //
 // Usage: dotnet run --project tools/SubnetSearch.SeedServerProviders -- [dataDir]
-//        (dataDir defaults to "./data" relative to the working directory)
 
 var dataDir = args.Length > 0 ? args[0] : Path.Combine(Directory.GetCurrentDirectory(), "data");
 dataDir = Path.GetFullPath(dataDir);
 
-var transitRoles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    { "tier1_transit", "major_transit", "midsize_transit" };
-
-var profiles = await new AsnMetadataParser().LoadNetworkProfilesAsync(Path.Combine(dataDir, "as.json"));
 var vpshNames = await BgpToolsTagLoader.LoadTagWithNamesAsync(
     Path.Combine(dataDir, BgpToolsTagLoader.FileName("vpsh")));
+var profiles  = await new AsnMetadataParser().LoadNetworkProfilesAsync(Path.Combine(dataDir, "as.json"));
 
-var core = ReadCoreAsns(Path.Combine(dataDir, "server-providers.json"));
-core.UnionWith(ReadCoreAsns(Path.Combine(dataDir, "server-providers.local.json")));
-var nonHosting = ReadNonHosting(Path.Combine(dataDir, "asn-exclusions.json"));
+var excluded = new HashSet<uint>();
+foreach (var section in new[] { "nonHosting", "knownCdns", "knownAiProviders" })
+    excluded.UnionWith(ReadAsnSection(Path.Combine(dataDir, "asn-exclusions.json"), section));
 
-var missing = vpshNames
-    .Where(kv => profiles.TryGetValue(kv.Key, out var pr)
-                 && pr.NetworkRole != null && transitRoles.Contains(pr.NetworkRole)
-                 && !core.Contains(kv.Key)
-                 && !nonHosting.Contains(kv.Key))
-    .Select(kv => (Asn: kv.Key, Name: kv.Value.Trim().Trim('"').Trim(),
-                   Profile: profiles[kv.Key]))
-    .OrderBy(x => x.Profile.Reach)
-    .ToList();
+var overlay = ReadOverlay(Path.Combine(dataDir, "server-providers.curated.json"));
 
-Console.WriteLine($"transit-role vpsh ASNs not in core: {missing.Count} (sorted by reach asc)");
-foreach (var m in missing)
-    Console.WriteLine($"  AS{m.Asn,-8} reach={m.Profile.Reach,-7} {m.Profile.NetworkRole,-16} {m.Name}");
+var core = ServerCoreBootstrap.Build(vpshNames, profiles, excluded, overlay);
+
+var outPath = Path.Combine(dataDir, "server-providers.json");
+var json = JsonSerializer.Serialize(
+    new ProvidersFile(core.Select(e => new ProviderEntry(e.Asn, e.Name, e.Types.ToArray())).ToArray()),
+    new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+await File.WriteAllTextAsync(outPath, json + "\n");
+
+int vpshCount = vpshNames.Count;
+Console.WriteLine($"vpsh {vpshCount} -> after prune+overlay: {core.Count} entries " +
+                  $"(overlay: {overlay.Count(o => o.Types.Count > 0)} replace/add, " +
+                  $"{overlay.Count(o => o.Types.Count == 0)} remove)");
+Console.WriteLine($"wrote {outPath}");
 return;
 
-static HashSet<uint> ReadCoreAsns(string path)
+static IEnumerable<uint> ReadAsnSection(string path, string section)
 {
-    var set = new HashSet<uint>();
-    if (!File.Exists(path)) return set;
+    if (!File.Exists(path)) yield break;
     using var doc = JsonDocument.Parse(File.ReadAllText(path));
-    if (doc.RootElement.TryGetProperty("providers", out var arr) && arr.ValueKind == JsonValueKind.Array)
+    if (doc.RootElement.TryGetProperty(section, out var arr) && arr.ValueKind == JsonValueKind.Array)
         foreach (var e in arr.EnumerateArray())
             if (e.TryGetProperty("asn", out var a) && a.TryGetUInt32(out var asn))
-                set.Add(asn);
-    return set;
+                yield return asn;
 }
 
-static HashSet<uint> ReadNonHosting(string path)
+static IReadOnlyList<CoreEntry> ReadOverlay(string path)
 {
-    var set = new HashSet<uint>();
-    if (!File.Exists(path)) return set;
-    using var doc = JsonDocument.Parse(File.ReadAllText(path));
-    if (doc.RootElement.TryGetProperty("nonHosting", out var arr) && arr.ValueKind == JsonValueKind.Array)
-        foreach (var e in arr.EnumerateArray())
-            if (e.TryGetProperty("asn", out var a) && a.TryGetUInt32(out var asn))
-                set.Add(asn);
-    return set;
+    if (!File.Exists(path)) return Array.Empty<CoreEntry>();
+    var doc = JsonSerializer.Deserialize<ProvidersFile>(File.ReadAllText(path),
+        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    if (doc?.Providers == null) return Array.Empty<CoreEntry>();
+    return doc.Providers
+        .Select(p => new CoreEntry(p.Asn, p.Name ?? "", p.Types ?? Array.Empty<string>()))
+        .ToList();
 }
+
+record ProvidersFile([property: JsonPropertyName("providers")] ProviderEntry[] Providers);
+record ProviderEntry(
+    [property: JsonPropertyName("asn")]   uint      Asn,
+    [property: JsonPropertyName("name")]  string?   Name,
+    [property: JsonPropertyName("types")] string[]? Types);

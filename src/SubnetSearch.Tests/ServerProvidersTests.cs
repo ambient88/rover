@@ -69,4 +69,52 @@ public class ServerProvidersTests
         sp.IsAllowed(31027, "vps").Should().BeFalse("карьер не в ядре — не проходит");
         sp.IsAllowed(215439, "vps").Should().BeFalse("мелкий vpsh больше НЕ проходит автоматически");
     }
+
+    [Fact]
+    public async Task IsAllowed_And_IsInCore_AreCaseInsensitive() // WR-01: typeFilter приходит сырым
+    {
+        // Тип в файле — в верхнем регистре, запрос — в разном.
+        var basePath = Temp("""{"providers":[{"asn":24940,"name":"Hetzner","types":["VPS"]}]}""");
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
+        File.Delete(basePath);
+
+        sp.IsInCore(24940, "vps").Should().BeTrue("хранимый тип case-insensitive");
+        sp.IsAllowed(24940, "VPS").Should().BeTrue("запрос верхним регистром");
+        sp.IsAllowed(24940, "Server").Should().BeTrue("server-shortcut case-insensitive");
+        sp.CoreAsnsForType("Server").Should().Contain(24940u);
+        sp.CoreAsnsForType("VPS").Should().Contain(24940u);
+    }
+
+    [Fact]
+    public async Task HostingAlias_FoldsToServer_InCoreAsnsAndIsAllowed() // W1: --type hosting == server
+    {
+        var basePath = Temp("""
+        {"providers":[
+          {"asn":24940,"name":"Hetzner","types":["vps","dedicated"]},
+          {"asn":16509,"name":"AWS","types":["cloud"]}
+        ]}
+        """);
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
+        File.Delete(basePath);
+
+        // hosting — документированный алиас server: любой тип ядра.
+        sp.CoreAsnsForType("hosting").Should().BeEquivalentTo(new uint[] { 24940, 16509 });
+        sp.CoreAsnsForType("HOSTING").Should().BeEquivalentTo(new uint[] { 24940, 16509 });
+        sp.IsAllowed(24940, "hosting").Should().BeTrue();
+        sp.IsAllowed(16509, "hosting").Should().BeTrue();
+        sp.CoreEntriesForType("hosting").Select(e => e.Asn)
+            .Should().BeEquivalentTo(new uint[] { 24940, 16509 });
+    }
+
+    [Fact]
+    public async Task LocalOverride_ReplacesTypeSet_NotUnion() // MergeFile — полная замена записи
+    {
+        var basePath  = Temp("""{"providers":[{"asn":5,"name":"Base","types":["vps"]}]}""");
+        var localPath = Temp("""{"providers":[{"asn":5,"name":"Local","types":["cloud"]}]}""");
+        var sp = await ServerProviders.LoadAsync(basePath, localPath);
+        File.Delete(basePath); File.Delete(localPath);
+
+        sp.IsInCore(5, "cloud").Should().BeTrue("local переопределил тип");
+        sp.IsInCore(5, "vps").Should().BeFalse("это замена, а не объединение");
+    }
 }
