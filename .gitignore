@@ -23,6 +23,11 @@ project.lock.json
 project.fragment.lock.json
 artifacts/
 
+# Test results & coverage (CI пишет сюда, см. .github/workflows/ci.yml)
+[Tt]est[Rr]esults/
+coverage.cobertura.xml
+*.trx
+
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
 
