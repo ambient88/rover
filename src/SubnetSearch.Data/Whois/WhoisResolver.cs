@@ -71,39 +71,7 @@ public partial class WhoisResolver : IWhoisResolver
 
             var response = await WhoisQuery.SendAsync(whoisServer, ipAddress, cts.Token);
 
-            string? organization = null;
-            if (RirOrgFields.TryGetValue(whoisServer, out var fields))
-            {
-                foreach (var field in fields)
-                {
-                    var match = Regex.Match(response,
-                        $@"^{Regex.Escape(field)}:\s*(.+?)\s*$",
-                        RegexOptions.Multiline | RegexOptions.IgnoreCase);
-                    if (match.Success)
-                    {
-                        organization = match.Groups[1].Value.Trim();
-                        break;
-                    }
-                }
-            }
-
-            string? country = null;
-            var countryMatch = CountryRegex().Match(response);
-            if (countryMatch.Success)
-                country = countryMatch.Groups[1].Value.ToUpperInvariant();
-
-            string? website = ExtractDomain(response);
-            string? abuseEmail = ExtractAbuseEmail(response);
-            WhoisServerToRir.TryGetValue(whoisServer, out string? rir);
-
-            DateTime? registrationDate = ExtractDate(response, "Registration");
-            DateTime? updatedDate = ExtractDate(response, "Updated");
-            string? status = ExtractStatus(response);
-
-            string rawPreview = response.Length > 500 ? response[..500] + "..." : response;
-
-            return new WhoisResult(organization, country, website, registrationDate, updatedDate, status, rawPreview,
-                AbuseEmail: abuseEmail, Rir: rir);
+            return ParseWhoisResponse(whoisServer, response);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception)
@@ -114,6 +82,43 @@ public partial class WhoisResolver : IWhoisResolver
         }
     }
 
+    internal static WhoisResult? ParseWhoisResponse(string whoisServer, string response)
+    {
+        string? organization = null;
+        if (RirOrgFields.TryGetValue(whoisServer, out var fields))
+        {
+            foreach (var field in fields)
+            {
+                var match = Regex.Match(response,
+                    $@"^{Regex.Escape(field)}:\s*(.+?)\s*$",
+                    RegexOptions.Multiline | RegexOptions.IgnoreCase);
+                if (match.Success)
+                {
+                    organization = match.Groups[1].Value.Trim();
+                    break;
+                }
+            }
+        }
+
+        string? country = null;
+        var countryMatch = CountryRegex().Match(response);
+        if (countryMatch.Success)
+            country = countryMatch.Groups[1].Value.ToUpperInvariant();
+
+        string? website = ExtractDomain(response);
+        string? abuseEmail = ExtractAbuseEmail(response);
+        WhoisServerToRir.TryGetValue(whoisServer, out string? rir);
+
+        DateTime? registrationDate = ExtractDate(response, "Registration");
+        DateTime? updatedDate = ExtractDate(response, "Updated");
+        string? status = ExtractStatus(response);
+
+        string rawPreview = response.Length > 500 ? response[..500] + "..." : response;
+
+        return new WhoisResult(organization, country, website, registrationDate, updatedDate, status, rawPreview,
+            AbuseEmail: abuseEmail, Rir: rir);
+    }
+
     // RIR/IANA domains that appear in boilerplate WHOIS text and are not
     // the website of the organization being looked up.
     private static readonly HashSet<string> RegistryDomains = new(StringComparer.OrdinalIgnoreCase)
@@ -122,13 +127,13 @@ public partial class WhoisResolver : IWhoisResolver
         "iana.org", "nro.net", "rdap.arin.net"
     };
 
-    private string? ExtractAbuseEmail(string whoisResponse)
+    private static string? ExtractAbuseEmail(string whoisResponse)
     {
         var match = AbuseEmailRegex().Match(whoisResponse);
         return match.Success ? match.Groups[1].Value.Trim() : null;
     }
 
-    private string? ExtractDomain(string whoisResponse)
+    private static string? ExtractDomain(string whoisResponse)
     {
         foreach (var regex in new[] { WebsiteFieldRegex(), WebsiteRemarksRegex(), WebsiteWwwRegex() })
         {
@@ -154,7 +159,7 @@ public partial class WhoisResolver : IWhoisResolver
         return match.Success && DateTime.TryParse(match.Groups[1].Value, out var date) ? date : null;
     }
 
-    private string? ExtractStatus(string whoisResponse)
+    private static string? ExtractStatus(string whoisResponse)
     {
         var match = StatusRegex().Match(whoisResponse);
         return match.Success ? match.Groups[1].Value.Trim() : null;

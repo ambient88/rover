@@ -27,7 +27,7 @@ public partial class TracerouteService : ITracerouteService
             try
             {
                 string output = await PingService.RunAsync("tracert", $"-d -w 2000 -h 30 {host}", cancellationToken);
-                return Parse(output);
+                return Parse(output, isWindows: true);
             }
             catch { return []; }
         }
@@ -46,17 +46,17 @@ public partial class TracerouteService : ITracerouteService
         try
         {
             string output = await PingService.RunAsync("traceroute", args, ct);
-            return Parse(output);
+            return Parse(output, isWindows: false);
         }
         catch (Exception e) when (e is not OperationCanceledException) { return []; }
     }
 
-    private static List<TracerouteHop> Parse(string output)
+    internal static List<TracerouteHop> Parse(string output, bool isWindows)
     {
         var hops = new List<TracerouteHop>();
         if (string.IsNullOrWhiteSpace(output)) return hops;
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (isWindows)
         {
             foreach (Match m in WindowsHopRegex().Matches(output))
             {
