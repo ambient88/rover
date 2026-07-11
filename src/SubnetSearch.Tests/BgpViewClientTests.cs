@@ -1,0 +1,92 @@
+using System.Net;
+using FluentAssertions;
+using SubnetSearch.Network.Http;
+
+namespace SubnetSearch.Tests;
+
+// BgpViewClient: разбор префиксов ASN из api.bgpview.io. Ok=false означает «источник упал»
+// (HTTP-сбой/битый ответ) — пустые списки при этом не являются авторитетным «префиксов нет».
+public class BgpViewClientTests
+{
+    private static BgpViewClient Client(TestHttpMessageHandler h) => new(new HttpClient(h));
+
+    [Fact]
+    public async Task GetPrefixes_Success_ParsesIpv4AndIpv6()
+    {
+        const string json = """
+        {"data":{
+          "ipv4_prefixes":[{"prefix":"1.2.3.0/24"},{"prefix":"5.6.0.0/16"}],
+          "ipv6_prefixes":[{"prefix":"2001:db8::/32"}]
+        }}
+        """;
+        var (ok, v4, v6) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, json))
+            .GetPrefixesAsync(13335);
+
+        ok.Should().BeTrue();
+        v4.Should().Equal("1.2.3.0/24", "5.6.0.0/16");
+        v6.Should().Equal("2001:db8::/32");
+    }
+
+    [Fact]
+    public async Task GetPrefixes_MissingIpv6_ReturnsEmptyList()
+    {
+        const string json = """{"data":{"ipv4_prefixes":[{"prefix":"1.0.0.0/8"}]}}""";
+        var (ok, v4, v6) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, json))
+            .GetPrefixesAsync(1);
+
+        ok.Should().BeTrue();
+        v4.Should().Equal("1.0.0.0/8");
+        v6.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetPrefixes_NonSuccess_ReturnsNotOk() // краевой случай: 5xx
+    {
+        var (ok, v4, v6) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.ServiceUnavailable, "{}"))
+            .GetPrefixesAsync(1);
+
+        ok.Should().BeFalse();
+        v4.Should().BeEmpty();
+        v6.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetPrefixes_NoDataProperty_ReturnsNotOk()
+    {
+        var (ok, _, _) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"status":"error"}"""))
+            .GetPrefixesAsync(1);
+
+        ok.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetPrefixes_MalformedJson_ReturnsNotOk() // краевой случай: битый ответ
+    {
+        var (ok, _, _) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ broken"))
+            .GetPrefixesAsync(1);
+
+        ok.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetPrefixes_SkipsEntriesWithoutPrefixField()
+    {
+        const string json = """{"data":{"ipv4_prefixes":[{"prefix":"1.0.0.0/8"},{"name":"no-prefix"}]}}""";
+        var (ok, v4, _) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, json))
+            .GetPrefixesAsync(1);
+
+        ok.Should().BeTrue();
+        v4.Should().Equal("1.0.0.0/8");
+    }
+
+    [Fact]
+    public async Task GetPrefixes_Cancellation_Throws() // краевой случай: отмена
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{}"))
+            .Invoking(c => c.GetPrefixesAsync(1, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+}

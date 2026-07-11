@@ -25,6 +25,10 @@
     <ProjectReference Include="..\SubnetSearch.Core\SubnetSearch.Core.csproj" />
     <ProjectReference Include="..\SubnetSearch.Classification\SubnetSearch.Classification.csproj" />
     <ProjectReference Include="..\SubnetSearch.Network\SubnetSearch.Network.csproj" />
+    <!-- Build-order only: гарантирует сборку CLI (rover) для E2E-тестов подпроцессом.
+         ReferenceOutputAssembly=false — сборка CLI НЕ копируется в bin тестов и НЕ попадает
+         в покрытие (её знаменатель остался бы почти пустым и исказил бы метрику). -->
+    <ProjectReference Include="..\SubnetSearch.Cli\SubnetSearch.Cli.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

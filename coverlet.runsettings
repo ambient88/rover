@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Настройки сбора покрытия (coverlet XPlat collector).
+     Исключаем сгенерированный код из знаменателя — иначе вывод source-generator'ов
+     ([GeneratedRegex] в *.g.cs) искусственно раздувает метрику и даёт «бесплатное»
+     покрытие, искажая реальную картину. Подключается в CI флагом «settings coverlet.runsettings». -->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <ExcludeByFile>**/*.g.cs,**/*.Generated.cs,**/obj/**</ExcludeByFile>
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+          <SkipAutoProps>true</SkipAutoProps>
+          <UseSourceLink>false</UseSourceLink>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
