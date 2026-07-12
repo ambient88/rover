@@ -38,11 +38,12 @@ public class DomainClassifier : IDomainClassifier
         string? reverseDns = await reverseDnsTask;
         var domainWhois = await domainWhoisTask;
 
-        // If WHOIS didn't return a hosting provider, derive it from IP results.
-        string? hostingProvider = domainWhois.HostingProvider;
-        if (string.IsNullOrWhiteSpace(hostingProvider))
-            hostingProvider = ipResults.FirstOrDefault(r => r.IsHosting)?.Organization
-                           ?? ipResults.FirstOrDefault()?.Organization;
+        // Hosting provider is derived from the resolved IPs, never from WHOIS: the WHOIS record
+        // carries the registrar, not the host, and conflating the two mislabels a domain
+        // registered at (say) GoDaddy but hosted at Hetzner (F3). Prefer the first hosting IP's
+        // organization, otherwise fall back to the first resolved IP's organization.
+        string? hostingProvider = ipResults.FirstOrDefault(r => r.IsHosting)?.Organization
+                               ?? ipResults.FirstOrDefault()?.Organization;
 
         return new DomainClassificationResult(
             Domain: domain,

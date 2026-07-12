@@ -6,18 +6,22 @@ namespace SubnetSearch.Tests;
 public class ProviderScannerHelpersTests
 {
     [Theory]
-    [InlineData("1.2.3.0/24", 256)]
-    [InlineData("10.0.0.0/8",  16777216)]
-    [InlineData("1.2.3.4/32",  1)]
-    public void CalcIpCount_ComputesHostCount(string prefix, int expected)
+    [InlineData("1.2.3.0/24", 256L)]
+    [InlineData("10.0.0.0/8",  16777216L)]
+    [InlineData("1.2.3.4/32",  1L)]
+    // Wide prefixes overflow a 32-bit int: /1 = 2^31, /0 = 2^32 (F20).
+    [InlineData("1.2.3.0/1",   2147483648L)]
+    [InlineData("0.0.0.0/0",   4294967296L)]
+    public void CalcIpCount_ComputesHostCount(string prefix, long expected)
         => ProviderScanner.CalcIpCount(prefix).Should().Be(expected);
 
     [Theory]
-    [InlineData("1.2.3.4")] 
-    [InlineData("1.2.3.0/33")] 
-    [InlineData("bad/prefix")] 
+    [InlineData("1.2.3.4")]
+    [InlineData("1.2.3.0/33")]
+    [InlineData("1.2.3.0/-1")]
+    [InlineData("bad/prefix")]
     public void CalcIpCount_InvalidPrefix_ReturnsZero(string prefix)
-        => ProviderScanner.CalcIpCount(prefix).Should().Be(0);
+        => ProviderScanner.CalcIpCount(prefix).Should().Be(0L);
 
     [Fact]
     public void ParseHolder_SplitsHandleAndOrg()

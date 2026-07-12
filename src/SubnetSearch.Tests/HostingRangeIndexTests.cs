@@ -91,4 +91,54 @@ public class HostingRangeIndexTests : IDisposable
 
         index.Find(IpConverter.IpToUint("8.8.8.8")).Should().BeNull();
     }
+
+    // Regression for F1: a wide range whose midpoint neighbour starts after the queried IP made
+    // the old start-only binary search recurse left and miss the covering range entirely.
+    // Layout (sorted by StartIp): Wide[.0-.200], Nested[.100-.150], Other[10.0.1.0-...].
+    // Querying 10.0.0.175 lands on Nested (start .100), sees .175 > .150, jumps right to Other
+    // (start 10.0.1.0 > .175), then null — even though Wide covers it.
+    [Fact]
+    public async Task Find_OverlappingRanges_FindsCoveringWideRange()
+    {
+        Write("ipcat-datacenters.csv",
+            "10.0.0.0,10.0.0.200,\"Wide\",\"wide.example\"\n" +
+            "10.0.0.100,10.0.0.150,\"Nested\",\"nested.example\"\n" +
+            "10.0.1.0,10.0.1.100,\"Other\",\"other.example\"\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        var hit = index.Find(IpConverter.IpToUint("10.0.0.175"));
+        hit.HasValue.Should().BeTrue("the wide range covers this IP even though it is not at the search midpoint");
+        hit!.Value.ProviderName.Should().Be("Wide");
+    }
+
+    // When several ranges cover the IP, the most specific (latest-starting) one wins.
+    [Fact]
+    public async Task Find_NestedRanges_ReturnsMostSpecific()
+    {
+        Write("ipcat-datacenters.csv",
+            "10.0.0.0,10.0.0.200,\"Wide\",\"wide.example\"\n" +
+            "10.0.0.100,10.0.0.150,\"Nested\",\"nested.example\"\n" +
+            "10.0.1.0,10.0.1.100,\"Other\",\"other.example\"\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        index.Find(IpConverter.IpToUint("10.0.0.120"))!.Value.ProviderName
+            .Should().Be("Nested", "the narrower nested range is more specific than the wide one");
+    }
+
+    // Boundary addresses (first and last of a range) must be covered even under overlap.
+    [Fact]
+    public async Task Find_RangeBoundaries_AreCovered()
+    {
+        Write("ipcat-datacenters.csv",
+            "10.0.0.0,10.0.0.200,\"Wide\",\"wide.example\"\n" +
+            "10.0.0.100,10.0.0.150,\"Nested\",\"nested.example\"\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        index.Find(IpConverter.IpToUint("10.0.0.0")).HasValue.Should().BeTrue("start of Wide");
+        index.Find(IpConverter.IpToUint("10.0.0.200")).HasValue.Should().BeTrue("end of Wide");
+        index.Find(IpConverter.IpToUint("10.0.0.201")).Should().BeNull("just past the end");
+    }
 }

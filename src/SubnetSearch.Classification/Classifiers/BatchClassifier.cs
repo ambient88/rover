@@ -28,22 +28,26 @@ public class BatchClassifier : IBatchClassifier
         var ips = ipAddresses.ToList();
         int processed = 0;
         int hostingCount = 0;
-        using var semaphore = new SemaphoreSlim(Concurrency);
+        var results = new ClassificationResult[ips.Count];
 
-        // The cancellationToken is only passed to semaphore.WaitAsync (slot acquisition).
-        // ClassifyAsync itself receives CancellationToken.None so the cached Task remains
-        // valid for future batch calls after the current one is cancelled.
-        // Trade-off: in-flight network requests (WHOIS, DNS) continue briefly after Ctrl+C,
-        // but their results are cached and prevent redundant work on retry.
-        var tasks = ips.Select(async (ip, i) =>
-        {
-            await semaphore.WaitAsync(cancellationToken);
-            try
+        // Bounded worker model: Parallel.ForEachAsync keeps at most `Concurrency` operations in
+        // flight and pulls items lazily from the source, so it never materializes one
+        // Task/state-machine per input up front. A large CIDR would otherwise allocate up to
+        // ~1M tasks and risk OutOfMemoryException (F4). The loop-level token stops scheduling new
+        // work on cancel; ClassifyAsync still receives CancellationToken.None so the cached Task
+        // stays valid for later batch calls (in-flight requests are cached, not wasted).
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, ips.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = cancellationToken },
+            async (i, _) =>
             {
+                var ip = ips[i];
                 var result = await _cache.GetOrAdd(
                     $"ip:{ip}",
                     () => _ipClassifier.ClassifyAsync(ip, CancellationToken.None))!;
 
+                // Write by index to preserve input order in the result list.
+                results[i] = result;
                 if (result.IsHosting) Interlocked.Increment(ref hostingCount);
                 int p = Interlocked.Increment(ref processed);
                 progress?.Report(new BatchProgress
@@ -52,16 +56,9 @@ public class BatchClassifier : IBatchClassifier
                     ProcessedItems = p,
                     HostingItems = hostingCount
                 });
-                return result;
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }).ToList();
+            });
 
-        // Task.WhenAll preserves result order matching the input list order.
-        return await Task.WhenAll(tasks);
+        return results;
     }
 
     public async Task<IReadOnlyList<DomainClassificationResult>> ClassifyDomainsAsync(
@@ -72,17 +69,20 @@ public class BatchClassifier : IBatchClassifier
         var domainList = domains.ToList();
         int processed = 0;
         int hostingCount = 0;
-        using var semaphore = new SemaphoreSlim(Concurrency);
+        var results = new DomainClassificationResult[domainList.Count];
 
-        var tasks = domainList.Select(async domain =>
-        {
-            await semaphore.WaitAsync(cancellationToken);
-            try
+        // Bounded worker model (see ClassifyIpsAsync) — no per-item Task materialization (F4).
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, domainList.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = cancellationToken },
+            async (i, _) =>
             {
+                var domain = domainList[i];
                 var result = await _cache.GetOrAdd(
                     $"domain:{domain}",
                     () => _domainClassifier.ClassifyDomainAsync(domain, CancellationToken.None))!;
 
+                results[i] = result;
                 if (result.IpResults.Any(r => r.IsHosting)) Interlocked.Increment(ref hostingCount);
                 int p = Interlocked.Increment(ref processed);
                 progress?.Report(new BatchProgress
@@ -91,14 +91,8 @@ public class BatchClassifier : IBatchClassifier
                     ProcessedItems = p,
                     HostingItems = hostingCount
                 });
-                return result;
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        }).ToList();
+            });
 
-        return await Task.WhenAll(tasks);
+        return results;
     }
 }

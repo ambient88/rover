@@ -107,7 +107,9 @@ public partial class DomainWhoisResolver : IDomainWhoisResolver
 
             return new DomainWhoisResult(
                 Registrar: registrar,
-                HostingProvider: registrar,
+                // The registrar is NOT the hosting provider — WHOIS carries the registrar only.
+                // The real host is derived from the resolved IPs downstream (F3).
+                HostingProvider: null,
                 RegistrationDate: registrationDate,
                 ExpirationDate: expirationDate,
                 NameServers: nameServers.Count > 0 ? nameServers : null,

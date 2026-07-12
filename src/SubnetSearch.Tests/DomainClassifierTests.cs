@@ -43,18 +43,23 @@ public class DomainClassifierTests
     private static DomainWhoisResult Whois(string? registrar, string? host)
         => new(registrar, host, null, null, new[] { "ns1.example" }, "active", null);
 
+    // Regression for F3: a domain registered at GoDaddy but hosted at Hetzner must report Hetzner
+    // as the hosting provider. The registrar stays a separate field and must NOT leak into hosting,
+    // even if the WHOIS record happens to carry a (registrar-conflated) provider string.
     [Fact]
-    public async Task Classify_UsesWhoisRegistrarAndProvider()
+    public async Task Classify_HostingFromIp_RegistrarNeverSubstitutesHosting()
     {
         var dns = new StubDns(new[] { IPAddress.Parse("1.2.3.4") }, ptr: "host.example");
         var ipc = new StubIpClassifier(_ => Hosting("Hetzner"));
-        var who = new StubWhois(Whois("GoDaddy", "CloudflareHosting"));
+        // WHOIS supplies both a registrar and a (bogus) provider — neither may become the host.
+        var who = new StubWhois(Whois("GoDaddy", "GoDaddy"));
         var sut = new DomainClassifier(ipc, who, dns);
 
         var result = await sut.ClassifyDomainAsync("example.com");
 
         result.DomainRegistrar.Should().Be("GoDaddy");
-        result.DomainHostingProvider.Should().Be("CloudflareHosting");
+        result.DomainHostingProvider.Should().Be("Hetzner", "hosting is derived from the resolved IP, not WHOIS");
+        result.DomainHostingProvider.Should().NotBe("GoDaddy", "the registrar must never be shown as the host");
         result.ResolvedIpAddresses.Should().Equal("1.2.3.4");
         result.ReverseDns.Should().Be("host.example");
         result.IpResults.Should().ContainSingle();

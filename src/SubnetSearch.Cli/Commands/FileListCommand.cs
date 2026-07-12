@@ -1,6 +1,6 @@
-using System.Net;
 using SubnetSearch.Classification;
 using SubnetSearch.Cli.Rendering;
+using SubnetSearch.Core.Utilities;
 
 namespace SubnetSearch.Cli.Commands;
 
@@ -27,15 +27,30 @@ public sealed class FileListCommand(CliContext ctx, string filePath) : ICommand
         var ips     = new List<string>();
         var domains = new List<string>();
 
+        int skippedIpv6 = 0;
         foreach (var item in items)
         {
-            if (IPAddress.TryParse(item, out _))
-                ips.Add(item);
-            else if (Uri.CheckHostName(item) == UriHostNameType.Dns)
-                domains.Add(item);
-            else
-                AnsiConsole.MarkupLine($"[yellow]Skipped: {Markup.Escape(item)} (not an IP or domain)[/]");
+            switch (BatchInputClassifier.Classify(item))
+            {
+                case BatchInputKind.Ipv4:
+                    ips.Add(item);
+                    break;
+                case BatchInputKind.Domain:
+                    domains.Add(item);
+                    break;
+                case BatchInputKind.Ipv6Unsupported:
+                    // IPv4-only pipeline — skip IPv6 at input so one entry can't fault the batch (F18).
+                    skippedIpv6++;
+                    AnsiConsole.MarkupLine($"[yellow]Skipped: {Markup.Escape(item)} (IPv6 is not supported)[/]");
+                    break;
+                default:
+                    AnsiConsole.MarkupLine($"[yellow]Skipped: {Markup.Escape(item)} (not an IP or domain)[/]");
+                    break;
+            }
         }
+
+        if (skippedIpv6 > 0)
+            AnsiConsole.MarkupLine($"[dim]{skippedIpv6} IPv6 address(es) skipped (IPv4-only).[/]");
 
         IReadOnlyList<ClassificationResult> ipResults         = [];
         IReadOnlyList<DomainClassificationResult> domainResults = [];

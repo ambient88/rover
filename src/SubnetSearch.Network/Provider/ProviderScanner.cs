@@ -59,7 +59,7 @@ public class ProviderScanner : IProviderScanner
             ? null
             : pdbInfo.Website;
 
-        int totalIps = prefixes.Sum(p => p.IpCount);
+        long totalIps = prefixes.Sum(p => p.IpCount);
 
         var otherCandidates = candidates.Count > 1
             ? candidates.Skip(1)
@@ -87,7 +87,7 @@ public class ProviderScanner : IProviderScanner
 
     private IpPrefix EnrichPrefix(string prefix)
     {
-        int ipCount = CalcIpCount(prefix);
+        long ipCount = CalcIpCount(prefix);
 
         if (_ipIndex == null)
             return new IpPrefix(prefix, null, null, ipCount);
@@ -105,11 +105,13 @@ public class ProviderScanner : IProviderScanner
             ipCount);
     }
 
-    internal static int CalcIpCount(string prefix)
+    internal static long CalcIpCount(string prefix)
     {
         var slash = prefix.IndexOf('/');
-        if (slash < 0 || !int.TryParse(prefix.AsSpan(slash + 1), out int cidr) || cidr > 32) return 0;
-        return cidr == 32 ? 1 : (int)Math.Pow(2, 32 - cidr);
+        if (slash < 0 || !int.TryParse(prefix.AsSpan(slash + 1), out int cidr) || cidr < 0 || cidr > 32) return 0;
+        // Exact power of two via shift: 1L << 32 (a /0) = 4_294_967_296, which fits in long
+        // but not int. Avoids the (int)Math.Pow overflow that made /1 and /0 go negative (F20).
+        return 1L << (32 - cidr);
     }
 
     // "SENKO-AS Senko Digital LLC" → ("SENKO-AS", "Senko Digital LLC")

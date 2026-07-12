@@ -62,6 +62,48 @@ public class BatchClassifierTests
         ipc.Calls.Should().Be(1, "одинаковый IP классифицируется один раз (кэш)");
     }
 
+    // Tracks how many classifications run concurrently so we can assert the worker pool is bounded.
+    private sealed class ConcurrencyTrackingClassifier : IIpClassifier
+    {
+        private int _current;
+        public int ObservedMax;
+        public async Task<ClassificationResult> ClassifyAsync(string ip, CancellationToken ct = default)
+        {
+            int now = Interlocked.Increment(ref _current);
+            int prevMax;
+            while (now > (prevMax = Volatile.Read(ref ObservedMax)))
+                Interlocked.CompareExchange(ref ObservedMax, now, prevMax);
+            try { await Task.Delay(15, ct); }
+            finally { Interlocked.Decrement(ref _current); }
+            return new ClassificationResult(false, 1, ip, "US", null, "stub");
+        }
+    }
+
+    [Fact]
+    public async Task ClassifyIps_BoundsConcurrency_NeverExceedsLimit() // F4: bounded worker pool
+    {
+        var ipc = new ConcurrencyTrackingClassifier();
+        var sut = new BatchClassifier(ipc, new StubDomainClassifier());
+        var ips = Enumerable.Range(0, 40).Select(i => $"9.9.9.{i}").ToArray();
+
+        await sut.ClassifyIpsAsync(ips);
+
+        ipc.ObservedMax.Should().BeLessThanOrEqualTo(8, "concurrency is capped at the worker limit");
+        ipc.ObservedMax.Should().BeGreaterThan(1, "work runs in parallel, not serially");
+    }
+
+    [Fact]
+    public async Task ClassifyIps_PreCancelledToken_Throws() // F4/F11: cancellation observed
+    {
+        var sut = new BatchClassifier(new ConcurrencyTrackingClassifier(), new StubDomainClassifier());
+        var ips = Enumerable.Range(0, 40).Select(i => $"9.9.9.{i}").ToArray();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await sut.Invoking(s => s.ClassifyIpsAsync(ips, null, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+
     [Fact]
     public async Task ClassifyIps_EmptyInput_ReturnsEmpty()
         => (await new BatchClassifier(new StubIpClassifier(), new StubDomainClassifier())

@@ -11,7 +11,8 @@ public record ProviderScanResult(
     IReadOnlyList<string>?        IxLocations,
     IReadOnlyList<IpPrefix>       Prefixes,
     IReadOnlyList<ProviderUpstream> Upstreams,
-    int     TotalIpCount,
+    // Sum of host counts across all prefixes; long to avoid 32-bit overflow (F20).
+    long    TotalIpCount,
     // Если поиск по имени вернул несколько кандидатов
     IReadOnlyList<(uint Asn, string? Name, string? Description)>? OtherCandidates = null
 );

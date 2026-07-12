@@ -8,13 +8,16 @@ namespace SubnetSearch.Classification;
 
 public class HostingRangeIndex : IHostingIpRangeProvider
 {
-    // ImmutableList is safe to read from any thread without locks.
-    // volatile ensures the reference write in LoadAsync is visible to all readers.
-    private volatile ImmutableList<HostingIpRange> _ranges = ImmutableList<HostingIpRange>.Empty;
-    private readonly SemaphoreSlim _loadLock = new(1, 1);
-    public IReadOnlyList<HostingIpRange> Ranges => _ranges;
+    // Immutable snapshot of the sorted ranges plus a prefix-max of EndIp, swapped atomically on
+    // (re)load. Bundling both in one volatile reference guarantees Find never observes a ranges
+    // array and a prefix-max array from different loads. Reading is lock-free.
+    private sealed record Snapshot(ImmutableArray<HostingIpRange> Ranges, uint[] PrefixMaxEnd);
 
-    public int Count => _ranges.Count;
+    private volatile Snapshot _snapshot = new(ImmutableArray<HostingIpRange>.Empty, Array.Empty<uint>());
+    private readonly SemaphoreSlim _loadLock = new(1, 1);
+    public IReadOnlyList<HostingIpRange> Ranges => _snapshot.Ranges;
+
+    public int Count => _snapshot.Ranges.Length;
 
     public async Task LoadAsync(string dataDir, CancellationToken cancellationToken = default)
     {
@@ -111,23 +114,45 @@ public class HostingRangeIndex : IHostingIpRangeProvider
             }
         }
 
-        _ranges = ranges.OrderBy(r => r.StartIp).ToImmutableList();
+        var sorted = ranges.OrderBy(r => r.StartIp).ToImmutableArray();
+
+        // prefixMaxEnd[i] = max EndIp over ranges[0..i]. Lets Find stop walking backwards as soon
+        // as no earlier range can still reach the queried IP (F1).
+        var prefixMaxEnd = new uint[sorted.Length];
+        uint running = 0;
+        for (int i = 0; i < sorted.Length; i++)
+        {
+            if (sorted[i].EndIp > running) running = sorted[i].EndIp;
+            prefixMaxEnd[i] = running;
+        }
+
+        _snapshot = new Snapshot(sorted, prefixMaxEnd);
     }
 
+    // Stabbing query over ranges that may overlap or nest. A plain start-only binary search is
+    // wrong for overlaps: a covering range can sit to the left of where the search lands and be
+    // skipped (F1). Instead: find the last range whose StartIp <= ip, then walk left while some
+    // earlier range can still reach ip (prefixMaxEnd >= ip), returning the first that covers it.
+    // Walking from the highest index first yields the most specific (latest-starting) match.
     public HostingIpRange? Find(uint ipInt)
     {
-        int low = 0, high = _ranges.Count - 1;
-        while (low <= high)
+        var snapshot = _snapshot;
+        var ranges = snapshot.Ranges;
+        var prefixMaxEnd = snapshot.PrefixMaxEnd;
+
+        // Upper bound: largest index whose StartIp <= ipInt.
+        int lo = 0, hi = ranges.Length - 1, startIdx = -1;
+        while (lo <= hi)
         {
-            int mid = (low + high) / 2;
-            var range = _ranges[mid];
-            if (ipInt < range.StartIp)
-                high = mid - 1;
-            else if (ipInt > range.EndIp)
-                low = mid + 1;
-            else
-                return range;
+            int mid = lo + (hi - lo) / 2;
+            if (ranges[mid].StartIp <= ipInt) { startIdx = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
+
+        for (int j = startIdx; j >= 0 && prefixMaxEnd[j] >= ipInt; j--)
+            if (ranges[j].EndIp >= ipInt)
+                return ranges[j];
+
         return null;
     }
     private static bool TryParseIp(string ip, out uint value) =>
