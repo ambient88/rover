@@ -158,6 +158,26 @@ public class DataStorageTests : IDisposable
         new GZipIntegrityChecker().IsValid(path).Should().BeFalse();
     }
 
+    // F8 regression: a truncated archive decompresses its first byte fine but has no valid gzip
+    // trailer. The old one-byte check waved it through; a full read must reject it. Incompressible
+    // random data ensures the truncation cuts the deflate body mid-block (a guaranteed decode error).
+    [Fact]
+    public void GZipChecker_TruncatedGzip_False()
+    {
+        var path = Path.Combine(_dir, "trunc.gz");
+        var payload = new byte[8000];
+        new Random(1234).NextBytes(payload);
+        using (var fs = File.Create(path))
+        using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+            gz.Write(payload);
+
+        // Drop the trailing half (removes the CRC32/ISIZE trailer and part of the deflate body).
+        var bytes = File.ReadAllBytes(path);
+        File.WriteAllBytes(path, bytes[..(bytes.Length / 2)]);
+
+        new GZipIntegrityChecker().IsValid(path).Should().BeFalse();
+    }
+
     [Fact]
     public void JsonChecker_ValidJson_True()
     {

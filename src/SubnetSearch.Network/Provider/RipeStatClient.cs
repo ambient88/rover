@@ -258,15 +258,21 @@ public class RipeStatClient
 
     // ── RPKI validity ratio ───────────────────────────────────────────────────
 
+    // RPKI/ROA state changes over time, so even an authoritative result must expire — days, not
+    // the former 10 years (F6). The cache key is versioned (rpki2_) so pre-existing 10-year
+    // rpki_ entries (some seen expiring in 2036) are ignored rather than trusted until then.
+    internal static readonly TimeSpan RpkiAuthoritativeTtl = TimeSpan.FromDays(7);
+    private const string RpkiKeyPrefix = "rpki2_";
+
     // Returns the ratio of RPKI-valid prefixes (0.0–1.0).
     // Samples up to maxSample prefixes to limit request count.
-    // Cached per-ASN under rpki_{asn}: авторитетный результат (все сэмплы отвечены,
-    // включая подлинный null у ASN без префиксов) живёт «навсегда»; частичный —
-    // 1 час; полный сбой не кэшируется вовсе (CR-01).
+    // Cached per-ASN under rpki2_{asn}: авторитетный результат (все сэмплы отвечены,
+    // включая подлинный null у ASN без префиксов) живёт RpkiAuthoritativeTtl (7 дней);
+    // частичный — 1 час; полный сбой не кэшируется вовсе (CR-01).
     public async Task<double?> GetRpkiValidityRatioAsync(
         uint asn, IReadOnlyList<string> prefixes, int maxSample = 5, CancellationToken ct = default)
     {
-        string cacheKey = $"rpki_{asn}";
+        string cacheKey = $"{RpkiKeyPrefix}{asn}";
         if (_cache != null && _cache.TryGet(cacheKey, out var cached))
         {
             // WR-02: битая запись → cache-miss (перезапишется ниже, TryGet-хит больше не блокирует Set).
@@ -301,13 +307,13 @@ public class RipeStatClient
         }
         double? ratio = checked_ > 0 ? (double)valid / checked_ : null;
 
-        // CR-01: «навсегда» кэшируется только авторитетный результат — все сэмплы отвечены
-        // (в т.ч. подлинный null при пустом списке префиксов). Частичный результат (часть
-        // сэмплов упала: rate-limit, таймаут) живёт 1 час — как null у abuse_. Полный сбой
-        // (failures > 0 && checked_ == 0) не кэшируется вовсе: транзиентная недоступность
-        // RIPE Stat не должна замораживаться в rpki_ на 10 лет.
+        // CR-01: авторитетный результат — все сэмплы отвечены (в т.ч. подлинный null при пустом
+        // списке префиксов) — кэшируется на RpkiAuthoritativeTtl (F6: 7 дней, а не 10 лет — RPKI
+        // меняется). Частичный результат (часть сэмплов упала: rate-limit, таймаут) живёт 1 час —
+        // как null у abuse_. Полный сбой (failures > 0 && checked_ == 0) не кэшируется вовсе:
+        // транзиентная недоступность RIPE Stat не должна замораживаться.
         if (failures == 0)
-            _cache?.Set(cacheKey, JsonSerializer.Serialize(new RpkiCacheData(ratio)), TimeSpan.FromDays(3650));
+            _cache?.Set(cacheKey, JsonSerializer.Serialize(new RpkiCacheData(ratio)), RpkiAuthoritativeTtl);
         else if (checked_ > 0)
             _cache?.Set(cacheKey, JsonSerializer.Serialize(new RpkiCacheData(ratio)), TimeSpan.FromHours(1));
 

@@ -140,6 +140,21 @@ public class HostingClassifierTests
         r.Source.Should().Be("IP2ASN");
     }
 
+    // F12: a curated CDN ASN (Akamai 20940) must win over the generic as.json "hosting" category.
+    // Akamai's org string is not in NonHostingOrgs, so only the ASN-based CDN override applies.
+    [Fact]
+    public async Task Classify_CuratedCdnAsn_OverridesHostingCategory()
+    {
+        var sut = Build(
+            records: new[] { Rec("23.1.2.0", "23.1.2.255", 20940, "Akamai Technologies") },
+            hostingAsns: new HashSet<uint> { 20940 }); // as.json marks it hosting — must be overridden
+
+        var r = await sut.ClassifyAsync("23.1.2.5");
+
+        r.IsHosting.Should().BeFalse("a curated CDN is not rentable hosting");
+        r.HostingType.Should().Be(HostingType.Cdn, "it is tagged as CDN instead");
+    }
+
     [Fact]
     public async Task Classify_NoRangeNoIp2Asn_WhoisFallback()
     {

@@ -169,7 +169,12 @@ public class HostingClassifier : IIpClassifier, IDisposable
                 uint   asn     = record.Value.Asn;
                 string ipRange = IpConverter.ToCidr(record.Value.StartIp, record.Value.EndIp);
 
-                bool isNonHosting = ClassificationRules.IsNonHostingOrg(org)
+                // A curated CDN ASN is authoritative: it must win over the generic as.json
+                // "hosting" category and over the PeeringDB "Content" fallback below, so a CDN is
+                // never shown as rentable hosting (F12). It is tagged Type=CDN further down.
+                bool isCdn = ClassificationRules.CdnAsns.Contains(asn);
+                bool isNonHosting = isCdn
+                                 || ClassificationRules.IsNonHostingOrg(org)
                                  || ClassificationRules.BackboneAsns.Contains(asn);
                 bool isHosting = !isNonHosting
                               && (_hostingAsns.Contains(asn)

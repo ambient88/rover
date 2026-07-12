@@ -133,6 +133,35 @@ public class RipeStatCacheTests
         finally { Directory.Delete(dir.FullName, true); }
     }
 
+    // ── F6: RPKI result must not be cached for 10 years ──
+
+    [Fact]
+    public void RpkiAuthoritativeTtl_IsDaysNotYears()
+        // RPKI/ROA state changes; an authoritative result should live days, not the former 3650.
+        => SubnetSearch.Network.RipeStatClient.RpkiAuthoritativeTtl
+            .Should().BeLessThanOrEqualTo(TimeSpan.FromDays(30));
+
+    [Fact]
+    public async Task GetRpkiValidityRatio_IgnoresLegacyRpkiKey()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var cache = new RipeStatCache(dir.FullName);
+            // A legacy rpki_ entry written by the old 10-year path (serialized RpkiCacheData).
+            cache.Set("rpki_1234", "{\"r\":0.95}", TimeSpan.FromDays(3650));
+            var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
+
+            // Empty prefix set → no HTTP, authoritative null result. The legacy key must not be
+            // honoured: old code returned 0.95, the versioned key returns null.
+            var ratio = await client.GetRpkiValidityRatioAsync(1234, Array.Empty<string>());
+
+            ratio.Should().BeNull("the stale 10-year rpki_ entry must be ignored after the version bump");
+            cache.TryGet("rpki2_1234", out _).Should().BeTrue("result is re-cached under the versioned key");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
     [Fact]
     public async Task FlushIfDirtyAsync_EvictsExpired_KeepsLive_AcrossReload()
     {

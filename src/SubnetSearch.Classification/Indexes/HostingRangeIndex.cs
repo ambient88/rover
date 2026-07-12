@@ -40,12 +40,12 @@ public class HostingRangeIndex : IHostingIpRangeProvider
             var lines = await File.ReadAllLinesAsync(ipcatPath, cancellationToken);
             foreach (var line in lines)
             {
-                var cols = line.Split(',');
-                if (cols.Length < 4) continue;
+                var cols = CsvLine.Parse(line);
+                if (cols.Count < 4) continue;
                 if (TryParseIp(cols[0], out uint start) && TryParseIp(cols[1], out uint end))
                 {
-                    string provider = cols[2].Trim('"');
-                    string? website = cols[3].Trim('"');
+                    string provider = cols[2];
+                    string? website = cols[3];
                     if (!string.IsNullOrWhiteSpace(website) && !website.StartsWith("http"))
                         website = "https://" + website;
                     ranges.Add(new HostingIpRange
@@ -97,10 +97,10 @@ public class HostingRangeIndex : IHostingIpRangeProvider
             var lines = await File.ReadAllLinesAsync(jhassinePath, cancellationToken);
             for (int i = 1; i < lines.Length; i++)
             {
-                var cols = lines[i].Split(',');
-                if (cols.Length < 4) continue;
-                string cidr = cols[0].Trim('"');
-                string vendor = cols[3].Trim('"');
+                var cols = CsvLine.Parse(lines[i]);
+                if (cols.Count < 4) continue;
+                string cidr = cols[0];
+                string vendor = cols[3];
                 if (TryParseCidr(cidr, out uint start, out uint end))
                 {
                     ranges.Add(new HostingIpRange

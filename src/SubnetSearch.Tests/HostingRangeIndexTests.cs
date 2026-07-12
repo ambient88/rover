@@ -36,6 +36,21 @@ public class HostingRangeIndexTests : IDisposable
         hit.Value.Website.Should().Be("https://acme.example", "схема добавляется, если её нет");
     }
 
+    // F7: a provider name containing a quoted comma must not shift the website column.
+    [Fact]
+    public async Task Load_IpcatQuotedComma_ParsesProviderAndWebsite()
+    {
+        Write("ipcat-datacenters.csv",
+            "64.5.32.0,64.5.63.255,\"ThePlanet.com Internet Services, Inc.\",http://theplanet.com\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        var hit = index.Find(IpConverter.IpToUint("64.5.40.1"));
+        hit.HasValue.Should().BeTrue();
+        hit!.Value.ProviderName.Should().Be("ThePlanet.com Internet Services, Inc.");
+        hit.Value.Website.Should().Be("http://theplanet.com", "website column is not corrupted by the comma");
+    }
+
     [Fact]
     public async Task Load_ReadsRezmossJson()
     {
