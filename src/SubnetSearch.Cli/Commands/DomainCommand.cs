@@ -10,7 +10,7 @@ public sealed class DomainCommand(CliContext ctx, string domain) : ICommand
     {
         if (string.IsNullOrWhiteSpace(domain))
             throw new ArgumentException("Provide a domain name.");
-        var domainClassifier = await ClassifierFactory.CreateDomainClassifierAsync(ctx.DataDir, ctx.PeeringDbHttp);
+        var domainClassifier = await ClassifierFactory.CreateDomainClassifierAsync(ctx.DataDir, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
         var classifyTask     = domainClassifier.ClassifyDomainAsync(domain, ct);
         var httpTask         = new HttpFingerprintService().FingerprintAsync(domain, ct);
         await Task.WhenAll(classifyTask, httpTask);

@@ -99,7 +99,7 @@ public sealed class RecommendCommand(
                                   Path.Combine(dataDir, "server-providers.local.json"));
 
         var bgpView    = new BgpViewClient(peeringDbHttp);
-        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache);
+        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache, peeringDbKey: config.PeeringDbKey);
         var pingSvc    = new PingService();
         var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, ripeCache);
         var indexCache = new ProviderIndexCache(dataDir);
@@ -511,12 +511,12 @@ public sealed class RecommendCommand(
                 else if (isTimeout)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB requests timed out — check your network connection or try again later.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (hasErrors)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB fetch failed — see errors above.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (diagnosticPreEnrich == 0 && diagnosticPerType != null)
                 {
@@ -526,7 +526,7 @@ public sealed class RecommendCommand(
                         AnsiConsole.MarkupLine($"[dim]  --type {Markup.Escape(typeFilter)} → {Markup.Escape(string.Join(", ", infoTypes ?? []))}[/]");
                     if (countryDisplay != null)
                         AnsiConsole.MarkupLine($"[dim]  --country {Markup.Escape(countryDisplay)} — try a different country code or remove the filter.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (diagnosticPreEnrich > 0)
                 {
@@ -539,7 +539,7 @@ public sealed class RecommendCommand(
                 {
                     // No diagnostics available — unexpected state, do a live check
                     AnsiConsole.MarkupLine("[yellow]No hosting networks found. Running connectivity check...[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, ct);
+                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
             }
             else if (maxPingMs.HasValue)
@@ -660,7 +660,7 @@ public sealed class RecommendCommand(
         return [.. asnCounts.OrderByDescending(kv => kv.Value).Select(kv => (kv.Key, kv.Value))];
     }
 
-    private static async Task CheckPeeringDbConnectivityAsync(HttpClient http, CancellationToken ct)
+    private static async Task CheckPeeringDbConnectivityAsync(HttpClient http, string? apiKey, CancellationToken ct)
     {
         try
         {
@@ -668,8 +668,16 @@ public sealed class RecommendCommand(
             // пользователя отменяет диагностический запрос сразу, а не через 10 секунд.
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
-            using var resp = await http.GetAsync(
-                "https://www.peeringdb.com/api/net?limit=1&status=ok", cts.Token);
+            // Attach the PeeringDB key per-request (never on a shared client — T-03-01);
+            // the shared helper strips CR/LF/null and normalizes an empty-after-strip key
+            // to null so it is never sent as an empty Api-Key (T-03-02, WR-01/WR-02).
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                "https://www.peeringdb.com/api/net?limit=1&status=ok");
+            var sanitizedKey = PeeringDbAuth.Sanitize(apiKey);
+            if (sanitizedKey != null)
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                    "Api-Key", sanitizedKey);
+            using var resp = await http.SendAsync(req, cts.Token);
             int code = (int)resp.StatusCode;
             if (resp.IsSuccessStatusCode)
                 AnsiConsole.MarkupLine($"[dim]PeeringDB connectivity: [green]OK[/] (HTTP {code})[/]");

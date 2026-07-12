@@ -10,7 +10,8 @@ public static class ClassifierFactory
     public static async Task<IIpClassifier> CreateAsync(
         string dataDir,
         bool forceWhois = false,
-        HttpClient? peeringDbHttpClient = null)
+        HttpClient? peeringDbHttpClient = null,
+        string? peeringDbKey = null)
     {
         // Load all four data sources in parallel.
         var hostingRangeIndex = new HostingRangeIndex();
@@ -29,7 +30,7 @@ public static class ClassifierFactory
         var ipIndex                           = new IpRangeIndex(records);
 
         var peeringDbHttp = peeringDbHttpClient ?? CreatePeeringDbHttpClient();
-        var peeringDbResolver = new PeeringDbWebsiteResolver(peeringDbHttp);
+        var peeringDbResolver = new PeeringDbWebsiteResolver(peeringDbHttp, peeringDbKey);
         var websiteResolver   = new HostingWebsiteResolver(byAsn, byOrg, peeringDbResolver);
 
         // Enrich hostingAsns with ASNs derived from hosting IP ranges.
@@ -71,9 +72,10 @@ public static class ClassifierFactory
 
     public static async Task<IDomainClassifier> CreateDomainClassifierAsync(
         string dataDir,
-        HttpClient? peeringDbHttpClient = null)
+        HttpClient? peeringDbHttpClient = null,
+        string? peeringDbKey = null)
     {
-        var ipClassifier  = await CreateAsync(dataDir, peeringDbHttpClient: peeringDbHttpClient);
+        var ipClassifier  = await CreateAsync(dataDir, peeringDbHttpClient: peeringDbHttpClient, peeringDbKey: peeringDbKey);
         IDomainWhoisResolver domainWhois = new DomainWhoisResolver();
         IDnsResolver dnsResolver         = new DnsResolver();
         return new DomainClassifier(ipClassifier, domainWhois, dnsResolver);
@@ -82,26 +84,23 @@ public static class ClassifierFactory
     public static async Task<IBatchClassifier> CreateBatchClassifierAsync(
         string dataDir,
         bool forceWhois = false,
-        HttpClient? peeringDbHttpClient = null)
+        HttpClient? peeringDbHttpClient = null,
+        string? peeringDbKey = null)
     {
-        var ipClassifier  = await CreateAsync(dataDir, forceWhois, peeringDbHttpClient);
+        var ipClassifier  = await CreateAsync(dataDir, forceWhois, peeringDbHttpClient, peeringDbKey);
         IDomainWhoisResolver domainWhois = new DomainWhoisResolver();
         IDnsResolver dnsResolver         = new DnsResolver();
         var domainClassifier             = new DomainClassifier(ipClassifier, domainWhois, dnsResolver);
         return new BatchClassifier(ipClassifier, domainClassifier, new InMemoryCache());
     }
 
-    public static HttpClient CreatePeeringDbHttpClient(HttpClient? bypassClient = null, string? apiKey = null)
+    // The PeeringDB key must never live on the shared client's DefaultRequestHeaders (that leaked
+    // it to unrelated hosts — T-03-01). The key travels per-request via PeeringDbWebsiteResolver /
+    // the connectivity probe instead (D-03), so this factory takes no key at all.
+    public static HttpClient CreatePeeringDbHttpClient(HttpClient? bypassClient = null)
     {
         var client = bypassClient ?? new HttpClient();
         client.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            // Strip CR/LF and null bytes; use typed API to validate value and overwrite any existing header.
-            var sanitizedKey = apiKey.Replace("\r", "").Replace("\n", "").Replace("\0", "").Trim();
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Api-Key", sanitizedKey);
-        }
         return client;
     }
 }

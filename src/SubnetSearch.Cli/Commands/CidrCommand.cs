@@ -30,7 +30,7 @@ public sealed class CidrCommand(CliContext ctx, string cidr) : ICommand
                 return 0;
         }
 
-        var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp);
+        var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
 
         // Guard against ranges too large to hold in memory.
         if (totalIps > 1_000_000)

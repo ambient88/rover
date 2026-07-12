@@ -14,7 +14,7 @@ public sealed class ProviderCommand(CliContext ctx, string query) : ICommand
         AnsiConsole.MarkupLine($"[cyan]Looking up provider: {Markup.Escape(query)}[/]\n");
 
         // CLI wires Classification and Network together directly.
-        var peeringDbRes = new PeeringDbWebsiteResolver(ctx.PeeringDbHttp);
+        var peeringDbRes = new PeeringDbWebsiteResolver(ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
         var websiteRes   = new HostingWebsiteResolver([], [], peeringDbRes);
         var ripeClient   = new RipeStatClient(ctx.PeeringDbHttp);
         var records      = await new Ip2AsnLoader().LoadAsync(Path.Combine(ctx.DataDir, "ip2asn-v4.tsv.gz"));

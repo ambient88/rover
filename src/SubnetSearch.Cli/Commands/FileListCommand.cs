@@ -23,7 +23,7 @@ public sealed class FileListCommand(CliContext ctx, string filePath) : ICommand
         if (items.Count == 0)
             throw new InvalidOperationException("File is empty.");
 
-        var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp);
+        var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
         var ips     = new List<string>();
         var domains = new List<string>();
 

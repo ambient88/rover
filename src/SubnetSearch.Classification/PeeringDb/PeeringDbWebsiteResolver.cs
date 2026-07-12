@@ -8,10 +8,28 @@ namespace SubnetSearch.Classification;
 public class PeeringDbWebsiteResolver
 {
     private readonly HttpClient _httpClient;
+    private readonly string? _apiKey;
 
-    public PeeringDbWebsiteResolver(HttpClient httpClient)
+    public PeeringDbWebsiteResolver(HttpClient httpClient, string? apiKey = null)
     {
         _httpClient = httpClient;
+        // Sanitize once via the shared helper: strips CR/LF/null and normalizes an
+        // empty-after-strip key (e.g. "\0"-only) to null so it is never attached as an
+        // empty Api-Key credential (WR-01/WR-02).
+        _apiKey = PeeringDbAuth.Sanitize(apiKey);
+    }
+
+    /// <summary>
+    /// Builds a GET request and attaches the per-request Api-Key Authorization only when a key is configured.
+    /// The secret lives on the individual request, never on the shared client's DefaultRequestHeaders.
+    /// </summary>
+    private HttpRequestMessage BuildRequest(string url)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
+        if (_apiKey != null)
+            req.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Api-Key", _apiKey);
+        return req;
     }
 
     /// <summary>
@@ -27,8 +45,9 @@ public class PeeringDbWebsiteResolver
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, cancellationToken);
             
-            using var response = await _httpClient.GetAsync(
-                "https://www.peeringdb.com/api/net?limit=1",
+            using var req = BuildRequest("https://www.peeringdb.com/api/net?limit=1");
+            using var response = await _httpClient.SendAsync(
+                req,
                 HttpCompletionOption.ResponseHeadersRead,
                 linked.Token);
 
@@ -67,14 +86,20 @@ public class PeeringDbWebsiteResolver
         try
         {
             var url = $"https://www.peeringdb.com/api/net?asn={asn}";
-            var response = await _httpClient.GetFromJsonAsync<PeeringDbResponse>(url, cancellationToken);
+            using var req = BuildRequest(url);
+            using var resp = await _httpClient.SendAsync(req, cancellationToken);
+            var response = await resp.Content.ReadFromJsonAsync<PeeringDbResponse>(cancellationToken);
             if (response?.Data is { Length: > 0 })
             {
                 var net = response.Data[0];
                 return new PeeringDbNetworkInfo(net.Website, net.InfoType, net.IxCount, net.Id);
             }
         }
-        catch { }
+        // Propagate cooperative cancellation (Ctrl+C); enrichment is optional so only
+        // network/JSON failures are swallowed and treated as "no data" (WR-03).
+        catch (OperationCanceledException) { throw; }
+        catch (HttpRequestException) { }
+        catch (System.Text.Json.JsonException) { }
         return null;
     }
 
@@ -83,7 +108,9 @@ public class PeeringDbWebsiteResolver
         try
         {
             var url = $"https://www.peeringdb.com/api/netixlan?net_id={netId}&status=ok";
-            var response = await _httpClient.GetFromJsonAsync<IxlanResponse>(url, cancellationToken);
+            using var req = BuildRequest(url);
+            using var resp = await _httpClient.SendAsync(req, cancellationToken);
+            var response = await resp.Content.ReadFromJsonAsync<IxlanResponse>(cancellationToken);
             if (response?.Data is { Length: > 0 })
                 return response.Data
                     .Select(x => x.Name)
@@ -92,7 +119,11 @@ public class PeeringDbWebsiteResolver
                     .OrderBy(n => n)
                     .ToList()!;
         }
-        catch { }
+        // Propagate cooperative cancellation (Ctrl+C); enrichment is optional so only
+        // network/JSON failures are swallowed and treated as "no data" (WR-03).
+        catch (OperationCanceledException) { throw; }
+        catch (HttpRequestException) { }
+        catch (System.Text.Json.JsonException) { }
         return null;
     }
 

@@ -67,6 +67,9 @@ public static class NetworkInterfaceHelper
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
+            // Defensive declaration of intent for this single long-lived, singly-disposed handler (D-01);
+            // near-no-op for a short-lived CLI but makes the connection lifetime explicit.
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             ConnectCallback = async (ctx, ct) =>
             {
                 // Wrap with explicit 8s timeout — outer ct doesn't reliably abort

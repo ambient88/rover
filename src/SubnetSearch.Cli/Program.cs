@@ -106,12 +106,12 @@ if (args.Length == 0)
 if (args[0].Equals("update", StringComparison.OrdinalIgnoreCase))
     return 0;
 
-string mode     = args[0].ToLower();
+string mode     = args[0].ToLowerInvariant();
 string argument = args.Length > 1 ? args[1] : string.Empty;
 
 // ================== INIT: PeeringDB check runs in parallel with main command ==================
 AnsiConsole.Write("Initializing... ");
-var peeringDbStatusTask = new PeeringDbWebsiteResolver(ctx.PeeringDbHttp).IsAvailableAsync();
+var peeringDbStatusTask = new PeeringDbWebsiteResolver(ctx.PeeringDbHttp, ctx.Config.PeeringDbKey).IsAvailableAsync();
 
 try
 {
@@ -150,6 +150,8 @@ try
             {
                 AnsiConsole.MarkupLine($"[red]Unknown --type value: '{Markup.Escape(typeFilter)}'[/]");
                 AnsiConsole.MarkupLine($"[yellow]Valid values:[/]  {ProviderFinder.ValidTypeValues}");
+                // Observe the background status task before disposing the shared client on early exit.
+                try { await peeringDbStatusTask; } catch { }
                 return 1;
             }
             string? sortBy     = ArgsParser.GetArgValue(args, "--sort");
@@ -165,6 +167,8 @@ try
         default:
             AnsiConsole.MarkupLine($"[red]Unknown mode: {Markup.Escape(mode)}[/]");
             HelpText.ShowHelp();
+            // Observe the background status task before disposing the shared client on early exit.
+            try { await peeringDbStatusTask; } catch { }
             return 1;
     }
 }

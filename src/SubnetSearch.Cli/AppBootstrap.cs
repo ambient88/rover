@@ -44,7 +44,8 @@ public static class AppBootstrap
         // Bypass VPN by binding to the physical network interface.
         // Falls back to default HttpClient if no physical interface is detected.
         var bypassClient = NetworkInterfaceHelper.CreateBypassVpnHttpClient();
-        var peeringDbHttp = ClassifierFactory.CreatePeeringDbHttpClient(bypassClient, appConfig.PeeringDbKey);
+        // The shared client carries no secret; the PeeringDB key travels per-request instead.
+        var peeringDbHttp = ClassifierFactory.CreatePeeringDbHttpClient(bypassClient);
 
         return new CliContext(dataDir, peeringDbHttp, appConfig, forceWhois);
     }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SubnetSearch.Classification;
 using SubnetSearch.Core.Models.Network;
 using SubnetSearch.Network.Http;
 
@@ -32,7 +33,12 @@ public class ProviderFinder(
     BgpViewClient?  bgpView               = null,
     string?         cacheDir              = null,
     IReadOnlyDictionary<uint, string>? caidaClassifications = null,
-    RipeStatCache?  ripeCache             = null)
+    RipeStatCache?  ripeCache             = null,
+    // PeeringDB Api-Key: attached per-request (never on the shared client's
+    // DefaultRequestHeaders — that reintroduces the header-bleed the phase fixed).
+    // Restores authentication on ProviderFinder's bulk PeeringDB pulls (CR-01), which
+    // is the path --set-key peeringdb= is advertised to unblock (raises the rate limit).
+    string?         peeringDbKey          = null)
 {
     private readonly AsnExclusions  _excl      = exclusions ?? AsnExclusions.Default;
     private readonly BgpViewClient? _bgpView   = bgpView;
@@ -40,11 +46,27 @@ public class ProviderFinder(
     private readonly RipeStatCache? _ripeCache = ripeCache;
     private readonly IReadOnlyDictionary<uint, string>? _caida = caidaClassifications;
     private readonly IReadOnlyDictionary<uint, string>? _asnTypes = asnTypes;
+    // Sanitized once via the shared helper (null when empty/whitespace/"\0"-only).
+    private readonly string? _pdbKey = PeeringDbAuth.Sanitize(peeringDbKey);
 
     private string? LookupAsnType(uint asn)
         => _asnTypes != null && _asnTypes.TryGetValue(asn, out var t) ? t : null;
 
     private const string PeeringDbBase = "https://www.peeringdb.com/api";
+
+    /// <summary>
+    /// Builds a GET request and attaches the per-request Api-Key Authorization only when a
+    /// key is configured. The secret lives on the individual request, never on the shared
+    /// client's DefaultRequestHeaders (CR-01 / T-03-01).
+    /// </summary>
+    private HttpRequestMessage PdbRequest(string url)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
+        if (_pdbKey != null)
+            req.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Api-Key", _pdbKey);
+        return req;
+    }
 
     // Maps user-friendly --type aliases to PeeringDB info_type values (case-sensitive).
     // Returns null for unrecognized non-null input — caller should treat as invalid.
@@ -246,8 +268,9 @@ public class ProviderFinder(
         List<int> ixIds;
         try
         {
-            using var ixResp = await peeringDbHttp.GetAsync(
-                $"{PeeringDbBase}/ix?name_search={Uri.EscapeDataString(region)}&status=ok", ct);
+            using var ixReq = PdbRequest(
+                $"{PeeringDbBase}/ix?name_search={Uri.EscapeDataString(region)}&status=ok");
+            using var ixResp = await peeringDbHttp.SendAsync(ixReq, ct);
             if (!ixResp.IsSuccessStatusCode) return [];
             var ixJson = await ixResp.Content.ReadAsStringAsync(ct);
             using var ixDoc = JsonDocument.Parse(ixJson);
@@ -267,8 +290,8 @@ public class ProviderFinder(
         {
             try
             {
-                using var lanResp = await peeringDbHttp.GetAsync(
-                    $"{PeeringDbBase}/netixlan?ix_id={ixId}&status=ok", ct);
+                using var lanReq = PdbRequest($"{PeeringDbBase}/netixlan?ix_id={ixId}&status=ok");
+                using var lanResp = await peeringDbHttp.SendAsync(lanReq, ct);
                 if (!lanResp.IsSuccessStatusCode) continue;
                 var lanJson = await lanResp.Content.ReadAsStringAsync(ct);
                 using var lanDoc = JsonDocument.Parse(lanJson);
@@ -287,8 +310,8 @@ public class ProviderFinder(
             {
                 try
                 {
-                    using var netResp = await peeringDbHttp.GetAsync(
-                        $"{PeeringDbBase}/net/{netId}", innerCt);
+                    using var netReq = PdbRequest($"{PeeringDbBase}/net/{netId}");
+                    using var netResp = await peeringDbHttp.SendAsync(netReq, innerCt);
                     if (!netResp.IsSuccessStatusCode) return;
                     var netJson = await netResp.Content.ReadAsStringAsync(innerCt);
                     using var netDoc = JsonDocument.Parse(netJson);
@@ -424,7 +447,8 @@ public class ProviderFinder(
                     using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     reqCts.CancelAfter(TimeSpan.FromSeconds(8));
 
-                    resp = await peeringDbHttp.GetAsync(url, reqCts.Token);
+                    using var req = PdbRequest(url);
+                    resp = await peeringDbHttp.SendAsync(req, reqCts.Token);
 
                     if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
@@ -780,8 +804,8 @@ public class ProviderFinder(
                     {
                         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
                         reqCts.CancelAfter(TimeSpan.FromSeconds(5));
-                        using var resp = await peeringDbHttp.GetAsync(
-                            $"{PeeringDbBase}/net?asn={entry.Asn}&status=ok", reqCts.Token);
+                        using var req = PdbRequest($"{PeeringDbBase}/net?asn={entry.Asn}&status=ok");
+                        using var resp = await peeringDbHttp.SendAsync(req, reqCts.Token);
 
                         if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                         {
