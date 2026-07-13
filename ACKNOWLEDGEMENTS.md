@@ -49,6 +49,13 @@ This section lists third-party works used by `rover` whose licenses require attr
   - **Used for:** Threat intelligence and reputation scoring (suspicious and malicious IP addresses)[reference:9].
   - **File:** `ipsum.txt` (downloaded from `https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt`)
 
+- **brianhama/bad-asn-list**
+  - **Author/Organization:** brianhama
+  - **Source:** [https://github.com/brianhama/bad-asn-list](https://github.com/brianhama/bad-asn-list)
+  - **License:** MIT License ([https://github.com/brianhama/bad-asn-list/blob/master/LICENSE](https://github.com/brianhama/bad-asn-list/blob/master/LICENSE))
+  - **Used for:** Curated list of ASNs belonging to hosting, colocation, and cloud providers; used to flag non-residential networks during IP classification.
+  - **File:** `bad-asn-list.txt` (downloaded from `https://raw.githubusercontent.com/brianhama/bad-asn-list/refs/heads/master/only%20number.txt`)
+
 ---
 
 ### Geolocation Data

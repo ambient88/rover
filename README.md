@@ -9,6 +9,8 @@
 
 A CLI tool for classifying IP addresses, domains, and subnets. Identifies hosting providers, geolocation, reputation, network characteristics, and ranks providers worldwide.
 
+In this example, I used a public list of IP addresses: https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/ipwhitelist.txt
+
 ![gif](https://raw.githubusercontent.com/ambient88/rover/main/static/images/demo1.gif)
 ---
 
@@ -52,7 +54,7 @@ chmod +x rover-linux-x64
 
 ### First run
 
-On the first run rover downloads its databases (~500 MB). After that it works offline.
+On the first run rover downloads its databases (~220 MB, about 350 MB on disk after decompression). After that it works offline.
 
 ```bash
 rover -a 8.8.8.8
@@ -77,8 +79,8 @@ rover -r --country DE --max-ping 50 --top 10
 * 🛡️ Reputation: IPsum, ipapi.is, AbuseIPDB, GreyNoise, Spamhaus DROP
 * 📡 Network: ping, traceroute, port scan, HTTP/TLS fingerprint
 * 🌐 Domains: registrar, NS, WHOIS, service type (VPN / CDN / hosting)
-* 🏢 Providers: scan by ASN or name — prefixes, upstreams, peerings
-* 🏆 Recommendations (`-r`): find and rank hosting providers worldwide
+* 🏢 Providers: scan by ASN or name for prefixes, upstreams, and peerings
+* 🏆 Recommendations (`-r`): find and rank hosting providers worldwide within a fixed time budget
 
 ---
 
@@ -119,6 +121,8 @@ rover -r <region>               Search by IXP region (e.g. Frankfurt, Amsterdam)
 --from <path|url>               Cross-reference results against a list of IPs
 --trace-to <ip>                 Run traceroute and highlight providers in the route
 ```
+
+`-r` runs within a short interactive time budget. It ranks the providers it can confirm quickly and returns partial results instead of blocking on a slow network. Data files and provider lookups are cached after the first run, so repeat queries finish in a few seconds.
 
 #### --type values
 
@@ -187,7 +191,7 @@ Optional keys extend reputation scoring in `-r` mode:
 ```
 --set-key abuseipdb=KEY      AbuseIPDB (free at abuseipdb.com)
 --set-key greynoise=KEY      GreyNoise  (free at greynoise.io)
---set-key peeringdb=KEY      PeeringDB  (free at peeringdb.com — raises rate limits)
+--set-key peeringdb=KEY      PeeringDB  (free at peeringdb.com, raises rate limits)
 --unset-key <service>        Remove a saved key
 --list-keys                  Show all configured keys
 ```
@@ -203,14 +207,20 @@ rover -r --abuseipdb-key YOUR_KEY --max-ping 100
 
 ## 📦 Data files
 
-| File | Source | Size | TTL |
-|------|--------|------|-----|
-| `ip2asn-v4.tsv.gz` | iptoasn.com | ~10 MB | 7 days |
-| `dbip-city.mmdb.gz` | db-ip.com | ~40 MB | 30 days |
-| `ipsum.txt` | stamparm/ipsum | ~1 MB | 1 day |
-| `ipcat-datacenters.csv` | ipcat | ~1 MB | 7 days |
-| `cloud-provider-ip-addresses.json` | Various | ~1 MB | 7 days |
-| `server-ip-addresses.csv` | Various | ~1 MB | 7 days |
+Download size is shown; `dbip-city.mmdb.gz` decompresses to ~125 MB on disk.
+
+| File | Source | Download | TTL |
+|------|--------|----------|-----|
+| `cloud-provider-ip-addresses.json` | rezmoss/cloud-provider-ip-addresses | ~82 MB | 14 days |
+| `as.json` | ipverse/as-metadata | ~66 MB | 7 days |
+| `dbip-city.mmdb.gz` | db-ip.com | ~60 MB | 30 days |
+| `ip2asn-v4.tsv.gz` | iptoasn.com | ~7 MB | 7 days |
+| `server-ip-addresses.csv` | jhassine/server-ip-addresses | ~3 MB | 14 days |
+| `ipsum.txt` | stamparm/ipsum | ~2 MB | 3 days |
+| `ipcat-datacenters.csv` | podlibre/ipcat | ~250 KB | 14 days |
+| `server-providers.json` | GitHub (this repo) | ~250 KB | 14 days |
+| `bad-asn-list.txt` | brianhama/bad-asn-list | ~50 KB | 7 days |
+| `bgptools-*.csv` (ASN tag lists) | bgp.tools | <1 MB total | 7 days |
 | `asn-exclusions.json` | GitHub (this repo) | <1 KB | 14 days |
 
 Stored in `~/.local/share/rover/data` (Linux/macOS) or `%APPDATA%\rover\data` (Windows).
@@ -251,9 +261,8 @@ dotnet test
 
 ## 🙏 Acknowledgements
 
-`rover` stands on the shoulders of the open-source community.  
-We use third-party data for geolocation, ASN mapping, reputation scoring, and cloud provider detection.  
-Full credits and license information are available in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+`rover` uses open-source data and libraries for geolocation, ASN mapping, reputation scoring, and cloud provider detection.  
+Full credits and license information are in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
 
 ## 🤝 Contributing
 
