@@ -3,14 +3,18 @@ using SubnetSearch.Core.Models.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace SubnetSearch.Data;
 
 public class HttpFileDownloader : IFileDownloader
 {
+    private sealed record PartialDownloadState(string? ETag, string? LastModified);
+
     private readonly HttpClient _http;
-    // Потокобезопасный словарь для отслеживания частично загруженных временных файлов (для возобновления)
+    // Thread-safe map tracking partially downloaded temp files (for resume).
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _partialFiles = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PartialDownloadState> _partialStates = new();
 
     public HttpFileDownloader(HttpClient httpClient)
     {
@@ -26,6 +30,11 @@ public class HttpFileDownloader : IFileDownloader
     public async Task<Stream> DownloadAsync(string url, IProgress<DownloadProgress>? progress, CancellationToken cancellationToken = default)
         => await DownloadAsync(url, new DownloadOptions(), progress, cancellationToken);
 
+    // Live HTTP download state machine (retry / resume / partial-file plumbing over the network).
+    // Its extractable decision logic — IsValidContentRange, TrySetIfRange, VerifyChecksum,
+    // CopyWithProgressAsync — is unit-tested separately; the raw I/O loop is integration-scope, so
+    // it is excluded from the unit-coverage metric.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public async Task<Stream> DownloadAsync(
         string url,
         DownloadOptions options,
@@ -59,28 +68,47 @@ public class HttpFileDownloader : IFileDownloader
                     if (existingPartial != null)
                     {
                         long existingLength = new FileInfo(existingPartial).Length;
-                        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                        req.Headers.Range = new RangeHeaderValue(existingLength, null);
-                        var rangeResp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
-                        if (rangeResp.StatusCode == HttpStatusCode.PartialContent)
+                        var state = await LoadPartialStateAsync(
+                            url, existingPartial, persistentResume, token);
+
+                        if (existingLength > 0 && state != null)
                         {
-                            await using var fs = new FileStream(existingPartial, FileMode.Append,
-                                FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
-                            var ns = await rangeResp.Content.ReadAsStreamAsync(token);
-                            await CopyWithProgressAsync(ns, fs, progress, existingLength,
-                                rangeResp.Content.Headers.ContentLength, token);
-                            if (!string.IsNullOrEmpty(options.ChecksumSha256))
-                                await VerifyChecksum(existingPartial, options.ChecksumSha256);
+                            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                            req.Headers.Range = new RangeHeaderValue(existingLength, null);
+                            if (TrySetIfRange(req, state))
+                            {
+                                using var rangeResp = await _http.SendAsync(
+                                    req, HttpCompletionOption.ResponseHeadersRead, token);
+                                if (rangeResp.StatusCode == HttpStatusCode.PartialContent &&
+                                    IsValidContentRange(rangeResp, existingLength))
+                                {
+                                    await using (var fs = new FileStream(existingPartial, FileMode.Append,
+                                        FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+                                    await using (var ns = await rangeResp.Content.ReadAsStreamAsync(token))
+                                    {
+                                        await CopyWithProgressAsync(ns, fs, progress, existingLength,
+                                            rangeResp.Content.Headers.ContentLength, token);
 
-                            if (!persistentResume) _partialFiles.TryRemove(url, out _);
+                                        long? expectedLength = rangeResp.Content.Headers.ContentRange?.Length;
+                                        if (expectedLength.HasValue && fs.Length != expectedLength.Value)
+                                            throw new InvalidDataException("The resumed download has an unexpected length.");
+                                    }
 
-                            var finalStream = new FileStream(existingPartial, FileMode.Open,
-                                FileAccess.Read, FileShare.Read, 81920,
-                                persistentResume ? FileOptions.None : FileOptions.DeleteOnClose);
-                            return finalStream;
+                                    if (!string.IsNullOrEmpty(options.ChecksumSha256))
+                                        await VerifyChecksum(existingPartial, options.ChecksumSha256);
+
+                                    RemovePartialState(url, existingPartial, persistentResume);
+                                    if (!persistentResume) _partialFiles.TryRemove(url, out _);
+
+                                    return new FileStream(existingPartial, FileMode.Open,
+                                        FileAccess.Read, FileShare.Read, 81920,
+                                        persistentResume ? FileOptions.None : FileOptions.DeleteOnClose);
+                                }
+                            }
                         }
-                        // Server doesn't support Range — start fresh.
+
                         File.Delete(existingPartial);
+                        RemovePartialState(url, existingPartial, persistentResume);
                         if (!persistentResume) _partialFiles.TryRemove(url, out _);
                         tempFile = persistentResume ? partialFilePath : null;
                     }
@@ -96,6 +124,10 @@ public class HttpFileDownloader : IFileDownloader
                 // the catch block without deleting the file — required for cross-retry resume
                 // on both persistent and non-persistent paths (Bug: FileShare.None conflict).
                 string partPath = persistentResume ? partialFilePath! : Path.GetTempFileName();
+                var partialState = new PartialDownloadState(
+                    fullResponse.Headers.ETag?.ToString(),
+                    fullResponse.Content.Headers.LastModified?.ToString("R"));
+                await SavePartialStateAsync(url, partPath, partialState, persistentResume, token);
                 var fileStream = new FileStream(partPath, FileMode.Create, FileAccess.ReadWrite,
                     FileShare.None, 81920, FileOptions.Asynchronous);
                 try
@@ -104,14 +136,19 @@ public class HttpFileDownloader : IFileDownloader
                     await CopyWithProgressAsync(networkStream, fileStream, progress, 0, totalBytes, token);
 
                     if (totalBytes.HasValue && fileStream.Length != totalBytes.Value)
-                        throw new InvalidDataException($"Загружено {fileStream.Length} байт, сервер заявлял {totalBytes.Value} байт.");
+                        throw new InvalidDataException($"Downloaded {fileStream.Length} bytes, server declared {totalBytes.Value} bytes.");
+
+                    // Close the write handle (FileShare.None) BEFORE verifying the checksum —
+                    // VerifyChecksum opens the file for reading and would otherwise hit a sharing
+                    // violation on Windows.
+                    await fileStream.DisposeAsync();
 
                     if (!string.IsNullOrEmpty(options.ChecksumSha256))
                         await VerifyChecksum(partPath, options.ChecksumSha256);
 
+                    RemovePartialState(url, partPath, persistentResume);
                     // Reopen as DeleteOnClose for non-persistent temp files so the caller's
                     // using/await-using disposes and deletes automatically.
-                    await fileStream.DisposeAsync();
                     return persistentResume
                         ? new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.None)
                         : new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.DeleteOnClose);
@@ -142,9 +179,15 @@ public class HttpFileDownloader : IFileDownloader
             {
                 // Delete corrupt partial data so the next attempt starts fresh.
                 if (partialFilePath != null && File.Exists(partialFilePath))
+                {
                     File.Delete(partialFilePath);         // persistent .part
+                    RemovePartialState(url, partialFilePath, true);
+                }
                 else if (tempFile != null && File.Exists(tempFile) && !persistentResume)
+                {
                     File.Delete(tempFile);                // in-memory temp
+                    RemovePartialState(url, tempFile, false);
+                }
                 await Task.Delay(delay * attempt, cancellationToken);
             }
         }
@@ -152,10 +195,94 @@ public class HttpFileDownloader : IFileDownloader
         throw new Exception("Failed to download file after all retries.");
     }
 
+    internal static bool IsValidContentRange(HttpResponseMessage response, long existingLength)
+    {
+        var range = response.Content.Headers.ContentRange;
+        if (range?.Unit != "bytes" || range.From != existingLength || !range.To.HasValue)
+            return false;
+        if (range.To.Value < existingLength)
+            return false;
+        if (range.Length.HasValue && range.To.Value >= range.Length.Value)
+            return false;
+
+        long expectedBodyLength = range.To.Value - existingLength + 1;
+        return !response.Content.Headers.ContentLength.HasValue ||
+               response.Content.Headers.ContentLength.Value == expectedBodyLength;
+    }
+
+    private static bool TrySetIfRange(
+        HttpRequestMessage request, PartialDownloadState state)
+    {
+        if (EntityTagHeaderValue.TryParse(state.ETag, out var etag))
+        {
+            request.Headers.IfRange = new RangeConditionHeaderValue(etag);
+            return true;
+        }
+
+        if (DateTimeOffset.TryParse(state.LastModified, out var lastModified))
+        {
+            request.Headers.IfRange = new RangeConditionHeaderValue(lastModified);
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task<PartialDownloadState?> LoadPartialStateAsync(
+        string url, string path, bool persistent, CancellationToken token)
+    {
+        if (!persistent)
+            return _partialStates.TryGetValue(url, out var state) ? state : null;
+
+        string statePath = path + ".meta";
+        if (!File.Exists(statePath)) return null;
+        try
+        {
+            string json = await File.ReadAllTextAsync(statePath, token);
+            return JsonSerializer.Deserialize<PartialDownloadState>(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private async Task SavePartialStateAsync(
+        string url,
+        string path,
+        PartialDownloadState state,
+        bool persistent,
+        CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(state.ETag) && string.IsNullOrWhiteSpace(state.LastModified))
+            return;
+
+        if (!persistent)
+        {
+            _partialStates[url] = state;
+            return;
+        }
+
+        await File.WriteAllTextAsync(path + ".meta", JsonSerializer.Serialize(state), token);
+    }
+
+    private void RemovePartialState(string url, string path, bool persistent)
+    {
+        if (!persistent)
+        {
+            _partialStates.TryRemove(url, out _);
+            return;
+        }
+
+        try { File.Delete(path + ".meta"); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
     private async Task CopyWithProgressAsync(
         Stream source, Stream destination,
         IProgress<DownloadProgress>? progress,
-        long initialOffset, // для возобновления
+        long initialOffset, // for resume
         long? totalBytes,
         CancellationToken token)
     {
@@ -228,6 +355,6 @@ public class HttpFileDownloader : IFileDownloader
         var hash = await sha.ComputeHashAsync(stream);
         string actual = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         if (!string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException($"Контрольная сумма не совпадает. Ожидалось: {expectedSha256}, получено: {actual}");
+            throw new InvalidDataException($"Checksum mismatch. Expected: {expectedSha256}, got: {actual}");
     }
 }

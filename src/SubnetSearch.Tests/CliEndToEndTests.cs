@@ -104,6 +104,18 @@ public class CliEndToEndTests
         output.Should().Contain("IP address");
     }
 
+    // F17: a global flag before the mode must still route to that mode, not fail as "Unknown mode".
+    // Regression for `rover --whois -a 8.8.8.8` → "Unknown mode: --whois".
+    [Fact]
+    public void FlagBeforeMode_RoutesToMode_NotUnknownMode()
+    {
+        var (exit, output) = RunCli("--whois", "-a");
+
+        exit.Should().Be(1);
+        output.Should().Contain("IP address", "the -a mode is recognised even though --whois precedes it");
+        output.Should().NotContain("Unknown mode");
+    }
+
     [Fact]
     public void Recommend_InvalidPreset_ExitsOneWithError() // краевой случай: невалидный пресет
     {

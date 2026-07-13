@@ -1,10 +1,19 @@
 using FluentAssertions;
+using System.Net;
+using SubnetSearch.Core.Interfaces.Classification;
+using SubnetSearch.Network;
 using SubnetSearch.Network.Recommend;
+using SubnetSearch.Network.Reputation;
 
 namespace SubnetSearch.Tests;
 
 public class ProviderScorerTests
 {
+    private sealed class CleanReputation : IIpReputationChecker
+    {
+        public int? Check(uint ipInt) => 0;
+    }
+
     private static double Score(double? lat, int? peering, int prefixes,
         double? abuser, double ipsum,
         double? abuseIpDb = null, double? greyNoise = null, double? rpki = null)
@@ -206,4 +215,84 @@ public class ProviderScorerTests
     [Fact]
     public void DeserializeAbuseOrNull_ToleratesCorruptJson()
         => ProviderScorer.DeserializeAbuseOrNull("{ not json ]").Should().BeNull();
+
+    [Fact]
+    public async Task ScoreAsync_ColdRpkiFetchesOnlyCandidatesThatCanReachShortlist()
+    {
+        string coldDir = Directory.CreateTempSubdirectory().FullName;
+        string fullDir = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            var candidates = Enumerable.Range(1, 30)
+                .Select(index => new ProviderCandidate(
+                    (uint)index,
+                    $"Provider {index}",
+                    null,
+                    null,
+                    "Content",
+                    index <= 2 ? 100 : 0,
+                    null,
+                    [$"11.{index}.0.0/24"],
+                    TotalIpCount: index <= 2 ? 1_000_000 : 1))
+                .ToList();
+
+            var coldCache = new RipeStatCache(coldDir);
+            PrimeScoringCache(coldCache, candidates);
+            var rpkiHandler = TestHttpMessageHandler.Always(
+                HttpStatusCode.OK,
+                "{\"status\":\"ok\",\"data\":{\"status\":\"valid\"}}");
+            var coldResults = await CreateScorer(
+                    coldDir, coldCache, new RipeStatClient(new HttpClient(rpkiHandler), coldCache))
+                .ScoreAsync(candidates, null, returnTop: 2, pingTopN: 2,
+                    strictAbuseFilter: false);
+
+            var fullCache = new RipeStatCache(fullDir);
+            PrimeScoringCache(fullCache, candidates);
+            foreach (var candidate in candidates)
+                fullCache.Set($"rpki_{candidate.Asn}", "{\"r\":1.0}", TimeSpan.FromDays(1));
+            var fullResults = await CreateScorer(
+                    fullDir, fullCache, new RipeStatClient(new HttpClient(), fullCache))
+                .ScoreAsync(candidates, null, returnTop: 2, pingTopN: 2,
+                    strictAbuseFilter: false);
+
+            coldResults.Select(result => result.Asn)
+                .Should().BeEquivalentTo(fullResults.Select(result => result.Asn));
+            rpkiHandler.Requests.Should().HaveCountLessThan(candidates.Count);
+        }
+        finally
+        {
+            Directory.Delete(coldDir, true);
+            Directory.Delete(fullDir, true);
+        }
+    }
+
+    private static ProviderScorer CreateScorer(
+        string dataDir,
+        RipeStatCache cache,
+        RipeStatClient ripeStat)
+    {
+        var spamhausHttp = new HttpClient(TestHttpMessageHandler.Always(
+            HttpStatusCode.OK, "AS65000 ; test\n"));
+        var ipapiHttp = new HttpClient(TestHttpMessageHandler.Custom(_ =>
+            throw new InvalidOperationException("ipapi should be served from cache")));
+        return new ProviderScorer(
+            new SpamhausDropClient(spamhausHttp, dataDir),
+            new IpapiIsClient(ipapiHttp),
+            new CleanReputation(),
+            new PingService(),
+            ripeCache: cache,
+            ripeStat: ripeStat);
+    }
+
+    private static void PrimeScoringCache(
+        RipeStatCache cache,
+        IEnumerable<ProviderCandidate> candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            cache.Set($"abuse_{candidate.Asn}", ProviderScorer.SerializeAbuse(0), TimeSpan.FromDays(1));
+            string anchor = ProviderScorer.GetAnchorIp(candidate.Prefixes[0])!;
+            cache.Set($"ping_{anchor}", ProviderScorer.SerializePingOrNull(null), TimeSpan.FromDays(1));
+        }
+    }
 }

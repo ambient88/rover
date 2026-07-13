@@ -49,7 +49,7 @@ public static class DownloadManagerFactory
 
     public static IReadOnlyList<FileDescriptor> GetDefaultFiles()
     {
-        // URL DB-IP генерируется динамически — база обновляется ежемесячно.
+        // The DB-IP URL is generated dynamically; the database is refreshed monthly.
         var now = DateTime.UtcNow;
         string dbIpUrl = $"https://download.db-ip.com/free/dbip-city-lite-{now:yyyy-MM}.mmdb.gz";
 
@@ -65,11 +65,12 @@ public static class DownloadManagerFactory
             new("https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt",                                                 "ipsum.txt",                       100_000,    TimeSpan.FromDays(3)),
             new("https://raw.githubusercontent.com/ambient88/rover/main/data/asn-exclusions.json",                                    "asn-exclusions.json",             500,        TimeSpan.FromDays(14)),
             new("https://raw.githubusercontent.com/ambient88/rover/main/data/server-providers.json",                                  "server-providers.json",           500,        TimeSpan.FromDays(14)),
+            new("https://raw.githubusercontent.com/brianhama/bad-asn-list/refs/heads/master/only%20number.txt",                      "bad-asn-list.txt",               5_000,      TimeSpan.FromDays(7)),
             //new("https://bgp.tools/asns.csv", "bgptools-asns.csv", 100_000, TimeSpan.FromDays(7)),
         };
 
-        // bgp.tools community-теги ASN — локальная замена ASN-типов ipapi.is (AsnTypeResolver).
-        // Файлы маленькие (единицы–сотни КБ); event.csv ~22 строки, поэтому MinSize минимальный.
+        // bgp.tools community ASN tags, a local replacement for ipapi.is ASN types (AsnTypeResolver).
+        // Files are small (a few to a few hundred KB); event.csv is ~22 lines, so MinSize is minimal.
         foreach (var tag in new[] { "vpsh", "cdn", "dsl", "mobile", "satnet", "gov", "uni", "perso", "corp", "biznet", "event" })
             files.Add(new($"https://bgp.tools/tags/{tag}.csv", $"bgptools-{tag}.csv", 100, TimeSpan.FromDays(7)));
 

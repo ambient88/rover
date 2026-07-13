@@ -1,4 +1,7 @@
 using FluentAssertions;
+using System.Net;
+using SubnetSearch.Network;
+using SubnetSearch.Network.Http;
 using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
@@ -10,6 +13,64 @@ namespace SubnetSearch.Tests;
 // удалена вместе с предикатами Is*Filter.
 public class ProviderFinderTests
 {
+    [Fact]
+    public async Task FindByAsnList_LocalPrefixesSkipBgpView()
+    {
+        var pdbHandler = TestHttpMessageHandler.Always(HttpStatusCode.OK, "{\"data\":[]}");
+        var ripeHandler = TestHttpMessageHandler.Always(HttpStatusCode.ServiceUnavailable, "{}");
+        var bgpHandler = TestHttpMessageHandler.Always(HttpStatusCode.ServiceUnavailable, "{}");
+        using var pdbHttp = new HttpClient(pdbHandler);
+        using var ripeHttp = new HttpClient(ripeHandler);
+        using var bgpHttp = new HttpClient(bgpHandler);
+        var finder = new ProviderFinder(
+            pdbHttp,
+            new RipeStatClient(ripeHttp),
+            bgpView: new BgpViewClient(bgpHttp));
+        var localPrefixes = new Dictionary<uint, IReadOnlyList<string>>
+        {
+            [64500] = ["10.0.0.0/24"]
+        };
+        var names = new Dictionary<uint, string> { [64500] = "Example" };
+
+        var result = await finder.FindByAsnListAsync(
+            [(64500, 1)], localPrefixFallback: localPrefixes, nameFallback: names);
+
+        bgpHandler.Requests.Should().BeEmpty();
+        result.Should().ContainSingle();
+        result[0].Prefixes.Should().Equal("10.0.0.0/24");
+    }
+
+    [Fact]
+    public async Task PeeringDbRequests_UseConfiguredKeyPerRequest()
+    {
+        var authorization = new List<string?>();
+        var pdbHandler = TestHttpMessageHandler.Custom(request =>
+        {
+            authorization.Add(request.Headers.Authorization?.ToString());
+            string url = request.RequestUri!.AbsoluteUri;
+            string body = url.Contains("/api/ix?", StringComparison.Ordinal)
+                ? "{\"data\":[{\"id\":1}]}"
+                : "{\"data\":[]}";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body)
+            };
+        });
+        using var pdbHttp = new HttpClient(pdbHandler);
+        using var ripeHttp = new HttpClient(
+            TestHttpMessageHandler.Always(HttpStatusCode.ServiceUnavailable, "{}"));
+        var finder = new ProviderFinder(
+            pdbHttp, new RipeStatClient(ripeHttp), peeringDbKey: "  secret\r\n");
+
+        await finder.FindGlobalAsync(infoTypes: ["Content"]);
+        await finder.FindByRegionAsync("test");
+        await finder.FindByAsnListAsync([(64500, 1)]);
+
+        authorization.Should().NotBeEmpty();
+        authorization.Should().OnlyContain(value => value == "Api-Key secret");
+        pdbHttp.DefaultRequestHeaders.Authorization.Should().BeNull();
+    }
+
     [Theory]
     [InlineData("vps")]
     [InlineData("VPS")]
@@ -259,7 +320,8 @@ public class ProviderFinderTests
     [InlineData("10.0.0.0/32", 1)]
     [InlineData("1.2.3.0-1.2.3.99", 100)]   // невыровненный диапазон из ip2asn
     [InlineData("1.2.3.4-1.2.3.4", 1)]
-    [InlineData("garbage", 1)]              // мусор → 1 (без падения)
+    [InlineData("garbage", 0)]
+    [InlineData("garbage/0", 0)]
     public void CountIpsInCidr_HandlesCidrAndRanges(string s, long expected)
         => ProviderFinder.CountIpsInCidr(s).Should().Be(expected);
 

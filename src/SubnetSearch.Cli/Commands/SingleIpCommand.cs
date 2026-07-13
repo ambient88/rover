@@ -15,7 +15,7 @@ public sealed class SingleIpCommand(CliContext ctx, string ip) : ICommand
         if (parsedIp.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
             throw new ArgumentException($"Only IPv4 addresses are supported: {ip}");
 
-        var classifier = await ClassifierFactory.CreateAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
+        using var classifier = await ClassifierFactory.CreateAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
 
         // Classification and network tests run in parallel.
         var classifyTask   = classifier.ClassifyAsync(ip, ct);

@@ -9,7 +9,19 @@ public class IpRangeIndex : IIpRangeIndex
 
     public IpRangeIndex(Ip2AsnRecord[] records)
     {
-        _records = records.OrderBy(r => r.StartIp).ToArray();
+        _records = IsSorted(records)
+            ? records
+            : records.OrderBy(r => r.StartIp).ToArray();
+    }
+
+    private static bool IsSorted(Ip2AsnRecord[] records)
+    {
+        for (int i = 1; i < records.Length; i++)
+        {
+            if (records[i - 1].StartIp > records[i].StartIp)
+                return false;
+        }
+        return true;
     }
 
     public Ip2AsnRecord? Find(uint ipInt)

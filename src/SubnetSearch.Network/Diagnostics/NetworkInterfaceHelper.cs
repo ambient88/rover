@@ -1,9 +1,12 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Network;
 
+// Physical-NIC enumeration + socket binding over the live OS network stack — integration-only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class NetworkInterfaceHelper
 {
     // Имена интерфейсов, которые считаются VPN/тунелями/виртуальными.
@@ -20,37 +23,42 @@ public static class NetworkInterfaceHelper
         "pseudo", "teredo", "isatap", "6to4"
     ];
 
-    // Физический интерфейс не меняется за время жизни CLI-процесса, а перечисление
-    // адаптеров стоит десятки миллисекунд — каждый PingAsync дёргал его дважды,
-    // что при сотнях пингов в -r складывалось в секунды. Кэшируем один раз.
-    private static readonly Lazy<(string? Name, IPAddress? Ip)> _physical = new(() =>
+    private static readonly object _physicalLock = new();
+    private static (string? Name, IPAddress? Ip)? _physical;
+
+    private static (string? Name, IPAddress? Ip) GetPhysical(bool refresh = false)
     {
-        // WR-10: Lazy в режиме по умолчанию кэширует исключение фабрики на всю жизнь
-        // процесса — транзиентный сбой перечисления адаптеров превращался бы в
-        // постоянный. Нет NIC-инфо → ping без привязки, bypass-клиент возвращает null.
-        try
+        lock (_physicalLock)
         {
-            var iface = GetPhysicalInterface();
-            var ip = iface?.GetIPProperties().UnicastAddresses
-                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork
-                         && !IPAddress.IsLoopback(a.Address))
-                .Select(a => a.Address)
-                .FirstOrDefault();
-            return (iface?.Name, ip);
+            if (!refresh && _physical.HasValue)
+                return _physical.Value;
+            try
+            {
+                var iface = GetPhysicalInterface();
+                var ip = iface?.GetIPProperties().UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork
+                             && !IPAddress.IsLoopback(a.Address))
+                    .Select(a => a.Address)
+                    .FirstOrDefault();
+                return (_physical = (iface?.Name, ip)).Value;
+            }
+            catch
+            {
+                return (_physical = (null, null)).Value;
+            }
         }
-        catch { return (null, null); }
-    });
+    }
 
     /// <summary>
     /// Возвращает имя физического сетевого интерфейса (Ethernet или Wi-Fi),
     /// исключая VPN/tunnel/virtual адаптеры.
     /// </summary>
-    public static string? GetPhysicalInterfaceName() => _physical.Value.Name;
+    public static string? GetPhysicalInterfaceName() => GetPhysical().Name;
 
     /// <summary>
     /// Возвращает IPv4-адрес физического интерфейса для привязки сокетов.
     /// </summary>
-    public static IPAddress? GetPhysicalIpAddress() => _physical.Value.Ip;
+    public static IPAddress? GetPhysicalIpAddress() => GetPhysical().Ip;
 
     /// <summary>
     /// Создаёт HttpClient, привязанный к физическому интерфейсу и не использующий
@@ -67,42 +75,80 @@ public static class NetworkInterfaceHelper
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
-            // Defensive declaration of intent for this single long-lived, singly-disposed handler (D-01);
-            // near-no-op for a short-lived CLI but makes the connection lifetime explicit.
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-            ConnectCallback = async (ctx, ct) =>
-            {
-                // Wrap with explicit 8s timeout — outer ct doesn't reliably abort
-                // socket.ConnectAsync on Linux when remote IP silently drops SYN packets.
-                using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                connectCts.CancelAfter(TimeSpan.FromSeconds(8));
-
-                var addresses = await Dns.GetHostAddressesAsync(
-                    ctx.DnsEndPoint.Host, AddressFamily.InterNetwork, connectCts.Token);
-                if (addresses.Length == 0)
-                    throw new SocketException((int)SocketError.HostNotFound);
-
-                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
-                {
-                    NoDelay = true
-                };
-                socket.Bind(new IPEndPoint(localIp, 0));
-                try
-                {
-                    await socket.ConnectAsync(addresses[0], ctx.DnsEndPoint.Port, connectCts.Token);
-                    return new NetworkStream(socket, ownsSocket: true);
-                }
-                catch
-                {
-                    socket.Dispose();
-                    throw;
-                }
-            }
+            ConnectCallback = (ctx, ct) => ConnectPublicAsync(ctx, localIp, ct)
         };
 
         var client = new HttpClient(handler);
         if (timeout.HasValue) client.Timeout = timeout.Value;
         return client;
+    }
+
+    private static async ValueTask<Stream> ConnectPublicAsync(
+        SocketsHttpConnectionContext context,
+        IPAddress? localIp,
+        CancellationToken cancellationToken)
+    {
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        TimeSpan totalTimeout = TimeSpan.FromSeconds(8);
+        connectCts.CancelAfter(totalTimeout);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + totalTimeout;
+
+        var addresses = await Dns.GetHostAddressesAsync(
+            context.DnsEndPoint.Host, AddressFamily.InterNetwork, connectCts.Token);
+        var publicAddresses = addresses
+            .Where(IpListAnalyzer.IsPublicAddress)
+            .Distinct()
+            .ToArray();
+        if (publicAddresses.Length == 0)
+            throw new SocketException((int)SocketError.HostNotFound);
+
+        IPAddress? bindIp = localIp;
+        for (int i = 0; i < publicAddresses.Length; i++)
+        {
+            TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero) break;
+
+            int addressesLeft = publicAddresses.Length - i;
+            TimeSpan attemptTimeout = TimeSpan.FromTicks(remaining.Ticks / addressesLeft);
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(connectCts.Token);
+            attemptCts.CancelAfter(attemptTimeout);
+
+            Socket? socket = null;
+            try
+            {
+                socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+                {
+                    NoDelay = true
+                };
+                if (bindIp != null) socket.Bind(new IPEndPoint(bindIp, 0));
+                await socket.ConnectAsync(
+                    publicAddresses[i], context.DnsEndPoint.Port, attemptCts.Token);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                socket?.Dispose();
+                throw;
+            }
+            catch (SocketException ex) when (
+                bindIp != null && ex.SocketErrorCode == SocketError.AddressNotAvailable)
+            {
+                socket?.Dispose();
+                var refreshedIp = GetPhysical(refresh: true).Ip;
+                if (refreshedIp != null && !refreshedIp.Equals(bindIp))
+                {
+                    bindIp = refreshedIp;
+                    i--;
+                }
+            }
+            catch
+            {
+                socket?.Dispose();
+            }
+        }
+
+        throw new SocketException((int)SocketError.TimedOut);
     }
 
     private static NetworkInterface? GetPhysicalInterface()

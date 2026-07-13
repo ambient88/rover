@@ -5,6 +5,8 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Network;
 
+// Traceroute over the OS traceroute binary / raw sockets — integration/manual-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class TracerouteService : ITracerouteService
 {
     // Linux: " 1  192.168.1.1  1.234 ms"  or " 3  * * *"
@@ -29,6 +31,7 @@ public partial class TracerouteService : ITracerouteService
                 string output = await PingService.RunAsync("tracert", $"-d -w 2000 -h 30 {host}", cancellationToken);
                 return Parse(output, isWindows: true);
             }
+            catch (OperationCanceledException) { throw; }
             catch { return []; }
         }
 

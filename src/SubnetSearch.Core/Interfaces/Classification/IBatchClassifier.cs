@@ -2,7 +2,7 @@
 
 namespace SubnetSearch.Core.Interfaces.Classification;
 
-public interface IBatchClassifier
+public interface IBatchClassifier : IDisposable
 {
     Task<IReadOnlyList<ClassificationResult>> ClassifyIpsAsync(
         IEnumerable<string> ipAddresses,
@@ -13,4 +13,6 @@ public interface IBatchClassifier
         IEnumerable<string> domains,
         IProgress<BatchProgress>? progress = null,
         CancellationToken cancellationToken = default);
+
+    void IDisposable.Dispose() { }
 }

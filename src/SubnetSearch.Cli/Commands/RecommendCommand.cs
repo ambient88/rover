@@ -14,11 +14,14 @@ public sealed class RecommendCommand(
 {
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
-        // WR-04: flush кэша в finally — любое исключение внутри поиска (сбой запуска
-        // ping, необработанная сетевая ошибка, Ctrl+C) не должно терять сотни
-        // накопленных за прогон RIPE/PeeringDB/ping-ответов: смысл кэша — переживать
-        // неудачные прогоны. Отравленные негативные записи при сбоях больше не пишутся
-        // (CR-01/WR-01/WR-03), поэтому flush безопасен и на пути ошибки.
+        if (!string.IsNullOrWhiteSpace(traceTo) &&
+            !System.Net.IPAddress.TryParse(traceTo, out _))
+        {
+            AnsiConsole.MarkupLine("[red]--trace-to requires an IP address.[/]");
+            return 1;
+        }
+
+        // Cache data is flushed even when the search is cancelled or fails.
         var ripeCache = await RipeStatCache.LoadAsync(ctx.DataDir);
         try
         {
@@ -69,39 +72,55 @@ public sealed class RecommendCommand(
 
 
         var ripeClient = new RipeStatClient(peeringDbHttp, ripeCache);
-        var spamhaus   = new SpamhausDropClient(peeringDbHttp);
+        var spamhaus   = new SpamhausDropClient(peeringDbHttp, dataDir);
         var ipapiIs    = new IpapiIsClient(peeringDbHttp);
         var abuseIpDb  = config.AbuseIpDbKey != null ? new AbuseIpDbClient(peeringDbHttp, config.AbuseIpDbKey) : null;
         var greyNoise  = config.GreyNoiseKey  != null ? new GreyNoiseClient(peeringDbHttp, config.GreyNoiseKey)  : null;
 
-        var ipsumData  = await new IpsumLoader().LoadAsync(Path.Combine(dataDir, "ipsum.txt"));
-        var ipsum      = new IpsumReputationChecker(ipsumData);
-        var exclusions = await AsnExclusions.LoadAsync(Path.Combine(dataDir, "asn-exclusions.json"));
+        var ipsumTask = new IpsumLoader().LoadAsync(Path.Combine(dataDir, "ipsum.txt"));
+        var exclusionsTask = AsnExclusions.LoadAsync(Path.Combine(dataDir, "asn-exclusions.json"));
+        var ip2asnTask = new Ip2AsnLoader().LoadAsync(Path.Combine(dataDir, "ip2asn-v4.tsv.gz"));
+        var caidaTask = CaidaClassificationLoader.LoadAsync(
+            Path.Combine(dataDir, "as-classification.txt.gz"));
+        var asJsonTask = new AsnMetadataParser().LoadCategoriesAsync(
+            Path.Combine(dataDir, "as.json"));
+        var bgpToolsTask = BgpToolsTagLoader.LoadAllAsync(dataDir);
+        var serverProvidersTask = ServerProviders.LoadAsync(
+            Path.Combine(dataDir, "server-providers.json"),
+            Path.Combine(dataDir, "server-providers.local.json"));
 
-        var ip2asnRecords = await new Ip2AsnLoader().LoadAsync(Path.Combine(dataDir, "ip2asn-v4.tsv.gz"));
-        var recoIpIndex   = new IpRangeIndex(ip2asnRecords);
+        await Task.WhenAll(
+            ipsumTask,
+            exclusionsTask,
+            ip2asnTask,
+            caidaTask,
+            asJsonTask,
+            bgpToolsTask,
+            serverProvidersTask);
 
-        var caidaData  = await CaidaClassificationLoader.LoadAsync(
-                             Path.Combine(dataDir, "as-classification.txt.gz"));
+        var ipsum = new IpsumReputationChecker(await ipsumTask);
+        var exclusions = await exclusionsTask;
+        var ip2asnRecords = await ip2asnTask;
+        var recoIpIndex = new IpRangeIndex(ip2asnRecords);
+        var caidaData = await caidaTask;
 
         // Локальная карта asn → тип: as.json (ipverse) + bgp.tools tags вместо сетевых
         // запросов к ipapi.is (эндпоинт умирал молча, а квота 1000/день сгорала за один прогон).
-        var asJsonCategories = await new AsnMetadataParser().LoadCategoriesAsync(Path.Combine(dataDir, "as.json"));
-        var bgpToolsTags     = await BgpToolsTagLoader.LoadAllAsync(dataDir);
+        var asJsonCategories = await asJsonTask;
+        var bgpToolsTags     = await bgpToolsTask;
         var asnTypes         = AsnTypeResolver.Build(bgpToolsTags, asJsonCategories);
 
         // Allowlist-модель server-фильтров (спека 2026-07-08, pure-allowlist ревизия):
         // членство в --type vps/dedicated/cloud/server даёт ТОЛЬКО курируемое ядро
         // server-providers.json (+ .local.json override). Авто-гейт по vpsh-тегу убран —
         // ничего не проходит автоматически, только проверенные арендуемые провайдеры.
-        var serverProviders = await ServerProviders.LoadAsync(
-                                  Path.Combine(dataDir, "server-providers.json"),
-                                  Path.Combine(dataDir, "server-providers.local.json"));
+        var serverProviders = await serverProvidersTask;
 
         var bgpView    = new BgpViewClient(peeringDbHttp);
         var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache, peeringDbKey: config.PeeringDbKey);
         var pingSvc    = new PingService();
-        var scorer     = new ProviderScorer(spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, ripeCache);
+        var scorer     = new ProviderScorer(
+            spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, ripeCache, ripeClient);
         var indexCache = new ProviderIndexCache(dataDir);
 
         IReadOnlyList<ProviderRecommendation> results = [];
@@ -124,13 +143,13 @@ public sealed class RecommendCommand(
             // интерфейсу (мимо VPN), и заблокированные провайдером хосты
             // (raw.githubusercontent.com) на нём падают с «SSL connection could not be
             // established». Обычный HttpClient идёт системным маршрутом — через VPN.
-            using var systemRouteHttp = new HttpClient();
+            using var systemRouteHandler = new HttpClientHandler { AllowAutoRedirect = false };
+            using var systemRouteHttp = new HttpClient(systemRouteHandler);
             systemRouteHttp.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
             try
             {
-                var text = await IpListAnalyzer.ReadSourceAsync(
+                var ips = await IpListAnalyzer.ReadIpsAsync(
                     fromSource, peeringDbHttp, ct, fallbackHttp: systemRouteHttp);
-                var ips  = IpListAnalyzer.ExtractIps(text);
                 if (ips.Count == 0)
                 {
                     AnsiConsole.MarkupLine("[yellow]--from: no IPv4 addresses found in the source.[/]");
@@ -267,7 +286,7 @@ public sealed class RecommendCommand(
                     {
                         var globalAsns = new HashSet<uint>(candidates.Select(c => c.Asn));
                         ctx.Status("Supplementing from local datacenter databases...");
-                        localHostingAsns = await GetLocalHostingAsnsAsync(dataDir);
+                        localHostingAsns = await GetLocalHostingAsnsAsync(dataDir, recoIpIndex);
                         var supplement = localHostingAsns.Where(a => !globalAsns.Contains(a.Asn)).Take(60).ToList();
                         if (supplement.Count > 0)
                         {
@@ -373,7 +392,7 @@ public sealed class RecommendCommand(
 
                     if (supplementPairs.Count > 0)
                     {
-                        localHostingAsns ??= await GetLocalHostingAsnsAsync(dataDir);
+                        localHostingAsns ??= await GetLocalHostingAsnsAsync(dataDir, recoIpIndex);
                         var localWhitelist2 = new HashSet<uint>(localHostingAsns.Select(a => a.Asn));
 
                         ctx.Status($"Filtering {supplementPairs.Count} country ASNs by local ASN type...");
@@ -439,7 +458,7 @@ public sealed class RecommendCommand(
                 // score higher on size metrics. PeeringDB "Content" mixes both types — filter IaaS first.
                 if (typeFilter?.ToLowerInvariant() is "cdn" or "content")
                 {
-                    localHostingAsns ??= await GetLocalHostingAsnsAsync(dataDir);
+                    localHostingAsns ??= await GetLocalHostingAsnsAsync(dataDir, recoIpIndex);
                     var hostingSetCdn = new HashSet<uint>(localHostingAsns.Select(a => a.Asn));
                     candidates = [.. candidates.Where(c =>
                         !hostingSetCdn.Contains(c.Asn) || exclusions.KnownCdnAsns.Contains(c.Asn))];
@@ -571,7 +590,7 @@ public sealed class RecommendCommand(
             AnsiConsole.MarkupLine($"[dim]Tracing route to {Markup.Escape(traceTo)}...[/]");
             try
             {
-                var hops     = await new TracerouteService().TraceAsync(traceTo);
+                var hops     = await new TracerouteService().TraceAsync(traceTo, ct);
                 var routeAsns = new HashSet<uint>();
                 foreach (var hop in hops)
                 {
@@ -584,6 +603,10 @@ public sealed class RecommendCommand(
                 }
                 if (routeAsns.Count > 0)
                     results = [.. results.Select(r => r with { InRoute = routeAsns.Contains(r.Asn) })];
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -641,36 +664,19 @@ public sealed class RecommendCommand(
 
     // Extracts hosting ASNs from local datacenter databases (ipcat, cloud-provider, server-ip-addresses).
     // Used to supplement PeeringDB discovery for providers not in PeeringDB's top-N by IX count.
-    private static async Task<IReadOnlyList<(uint Asn, int Count)>> GetLocalHostingAsnsAsync(string dataDir)
-    {
-        var hostingIndex = new HostingRangeIndex();
-        await hostingIndex.LoadAsync(dataDir);
-        if (hostingIndex.Count == 0) return [];
-
-        var records = await new Ip2AsnLoader().LoadAsync(Path.Combine(dataDir, "ip2asn-v4.tsv.gz"));
-        var ipIndex  = new IpRangeIndex(records);
-
-        var asnCounts = new Dictionary<uint, int>();
-        foreach (var range in hostingIndex.Ranges)
-        {
-            var rec = ipIndex.Find(range.StartIp);
-            if (rec.HasValue && rec.Value.Asn > 0)
-                asnCounts[rec.Value.Asn] = asnCounts.GetValueOrDefault(rec.Value.Asn) + 1;
-        }
-        return [.. asnCounts.OrderByDescending(kv => kv.Value).Select(kv => (kv.Key, kv.Value))];
-    }
+    private static async Task<IReadOnlyList<(uint Asn, int Count)>> GetLocalHostingAsnsAsync(
+        string dataDir,
+        SubnetSearch.Core.Interfaces.Classification.IIpRangeIndex ipIndex)
+        => await new LocalHostingAsnCache(dataDir).GetAsync(ipIndex);
 
     private static async Task CheckPeeringDbConnectivityAsync(HttpClient http, string? apiKey, CancellationToken ct)
     {
         try
         {
-            // IN-03: собственный 10s-таймаут связан с внешним ct команды — Ctrl+C
-            // пользователя отменяет диагностический запрос сразу, а не через 10 секунд.
+            // The diagnostic request has its own short timeout.
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
-            // Attach the PeeringDB key per-request (never on a shared client — T-03-01);
-            // the shared helper strips CR/LF/null and normalizes an empty-after-strip key
-            // to null so it is never sent as an empty Api-Key (T-03-02, WR-01/WR-02).
+            // Authentication is attached only to this PeeringDB request.
             using var req = new HttpRequestMessage(HttpMethod.Get,
                 "https://www.peeringdb.com/api/net?limit=1&status=ok");
             var sanitizedKey = PeeringDbAuth.Sanitize(apiKey);

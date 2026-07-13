@@ -1,7 +1,9 @@
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using SubnetSearch.Core.Interfaces.Data;
+using SubnetSearch.Core.Utilities;
 using SubnetSearch.Data;
 
 namespace SubnetSearch.Tests;
@@ -21,6 +23,32 @@ public class DataStorageTests : IDisposable
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); }
 
     private static Stream Bytes(string s) => new MemoryStream(Encoding.UTF8.GetBytes(s));
+
+    private sealed class CountingChecker : IFileIntegrityChecker
+    {
+        public int Calls { get; private set; }
+
+        public bool IsValid(string filePath)
+        {
+            Calls++;
+            return File.ReadAllText(filePath) == "valid";
+        }
+    }
+
+    private sealed class ConcurrencyChecker : IFileIntegrityChecker
+    {
+        private int _active;
+        public int MaxActive { get; private set; }
+
+        public bool IsValid(string filePath)
+        {
+            int active = Interlocked.Increment(ref _active);
+            lock (this) MaxActive = Math.Max(MaxActive, active);
+            Thread.Sleep(50);
+            Interlocked.Decrement(ref _active);
+            return true;
+        }
+    }
 
     // ── LocalFileStorage ──
 
@@ -78,7 +106,104 @@ public class DataStorageTests : IDisposable
     }
 
     [Fact]
-    public void Storage_RejectsPathTraversal() // краевой случай: выход за пределы каталога
+    public void Storage_IntegritySnapshot_SkipsUnchangedFileAndRechecksChangedFile()
+    {
+        string path = Path.Combine(_dir, "large.test");
+        File.WriteAllText(path, "valid");
+        var checker = new CountingChecker();
+        var checkers = new Dictionary<string, IFileIntegrityChecker> { [".test"] = checker };
+
+        new LocalFileStorage(_dir, checkers).IsFileValid("large.test", 0).Should().BeTrue();
+        new LocalFileStorage(_dir, checkers).IsFileValid("large.test", 0).Should().BeTrue();
+        checker.Calls.Should().Be(1);
+
+        File.WriteAllText(path, "other");
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(1));
+
+        new LocalFileStorage(_dir, checkers).IsFileValid("large.test", 0).Should().BeFalse();
+        checker.Calls.Should().Be(2);
+    }
+
+    [Fact]
+    public void Storage_IntegritySnapshotFallsBackWhenDataDirectoryIsNotWritable()
+    {
+        string path = Path.Combine(_dir, "fallback.test");
+        string primarySnapshot = path + ".integrity.json";
+        File.WriteAllText(path, "valid");
+        Directory.CreateDirectory(primarySnapshot);
+        var checker = new CountingChecker();
+        var checkers = new Dictionary<string, IFileIntegrityChecker> { [".test"] = checker };
+        string fallbackDirectory = DerivedCachePath.ForDataDirectory(_dir, "integrity");
+
+        try
+        {
+            new LocalFileStorage(_dir, checkers).IsFileValid("fallback.test", 0).Should().BeTrue();
+            new LocalFileStorage(_dir, checkers).IsFileValid("fallback.test", 0).Should().BeTrue();
+
+            checker.Calls.Should().Be(1);
+            File.Exists(Path.Combine(fallbackDirectory, "fallback.test.integrity.json"))
+                .Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(fallbackDirectory))
+                Directory.Delete(fallbackDirectory, true);
+        }
+    }
+
+    [Fact]
+    public void Storage_LegacySnapshotMigratesWithoutRecheckingFile()
+    {
+        string path = Path.Combine(_dir, "legacy.test");
+        File.WriteAllText(path, "valid");
+        var info = new FileInfo(path);
+        var checker = new CountingChecker();
+        string checkerType = checker.GetType().FullName!;
+        File.WriteAllText(path + ".integrity.json", JsonSerializer.Serialize(new
+        {
+            Length = info.Length,
+            LastWriteTimeUtcTicks = info.LastWriteTimeUtc.Ticks,
+            CheckerVersion = checkerType + ":0123456789ABCDEF0123456789ABCDEF"
+        }));
+        var storage = new LocalFileStorage(
+            _dir,
+            new Dictionary<string, IFileIntegrityChecker> { [".test"] = checker });
+
+        storage.IsFileValid("legacy.test", 0).Should().BeTrue();
+
+        checker.Calls.Should().Be(0);
+        using var migrated = JsonDocument.Parse(File.ReadAllText(path + ".integrity.json"));
+        migrated.RootElement.GetProperty("CheckerVersion").GetString()
+            .Should().Be(checkerType + ":1");
+    }
+
+    [Fact]
+    public async Task Storage_DifferentFilesAreValidatedConcurrently()
+    {
+        File.WriteAllText(Path.Combine(_dir, "first.test"), "first");
+        File.WriteAllText(Path.Combine(_dir, "second.test"), "second");
+        var checker = new ConcurrencyChecker();
+        var storage = new LocalFileStorage(
+            _dir,
+            new Dictionary<string, IFileIntegrityChecker> { [".test"] = checker });
+
+        await Task.WhenAll(
+            Task.Factory.StartNew(
+                () => storage.IsFileValid("first.test", 0),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default),
+            Task.Factory.StartNew(
+                () => storage.IsFileValid("second.test", 0),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default));
+
+        checker.MaxActive.Should().Be(2);
+    }
+
+    [Fact]
+    public void Storage_RejectsPathTraversal()
     {
         var storage = new LocalFileStorage(_dir);
 

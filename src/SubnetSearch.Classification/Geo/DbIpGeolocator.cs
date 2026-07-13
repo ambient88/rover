@@ -6,6 +6,8 @@ using System.Net;
 
 namespace SubnetSearch.Classification;
 
+// Thin wrapper over the MaxMind/DB-IP reader (file + native lookups) — integration-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class DbIpGeolocator : IGeolocator, IDisposable
 {
     private readonly Reader? _reader;
@@ -24,11 +26,11 @@ public sealed class DbIpGeolocator : IGeolocator, IDisposable
         }
     }
 
-    // Распаковывает .mmdb.gz рядом с источником; повторная распаковка только
-    // если gz-файл новее уже распакованного.
+    // Decompresses .mmdb.gz next to the source; re-decompresses only when the
+    // gz file is newer than the already-extracted .mmdb.
     private static string DecompressIfNeeded(string gzPath)
     {
-        string mmdbPath = Path.ChangeExtension(gzPath, null); // убирает .gz → .mmdb
+        string mmdbPath = Path.ChangeExtension(gzPath, null); // strips .gz to get .mmdb
         var gzInfo   = new FileInfo(gzPath);
         var mmdbInfo = new FileInfo(mmdbPath);
 

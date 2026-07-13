@@ -5,9 +5,11 @@ using System.Net;
 
 namespace SubnetSearch.Classification;
 
+// Thin DNS-resolution adapter (live System.Net.Dns lookups) — integration-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public class DnsResolver : IDnsResolver
 {
-    // LookupClient потокобезопасен, один экземпляр на весь процесс.
+    // LookupClient is thread-safe; one instance for the whole process.
     private static readonly LookupClient Client = new();
 
     public async Task<IReadOnlyList<IPAddress>> ResolveAllIpAsync(string domain, CancellationToken cancellationToken = default)

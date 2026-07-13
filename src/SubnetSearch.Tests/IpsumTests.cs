@@ -91,4 +91,27 @@ public class IpsumTests
 
         checker.Check(Ip("9.9.9.9")).Should().BeNull();
     }
+
+    [Fact]
+    public async Task Load_SourceChange_InvalidatesCache()
+    {
+        var path = TempFile("1.2.3.4\t2\n");
+        var cacheDir = Path.Combine(Path.GetTempPath(), $"ipsum-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var loader = new IpsumLoader(cacheDir);
+            (await loader.LoadAsync(path))[Ip("1.2.3.4")].Should().Be(2);
+            await File.WriteAllTextAsync(path, "1.2.3.4\t9\n");
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(2));
+
+            var scores = await loader.LoadAsync(path);
+
+            scores[Ip("1.2.3.4")].Should().Be(9);
+        }
+        finally
+        {
+            File.Delete(path);
+            if (Directory.Exists(cacheDir)) Directory.Delete(cacheDir, true);
+        }
+    }
 }

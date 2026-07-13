@@ -43,7 +43,8 @@ public static class AppBootstrap
         // ================== INIT: PeeringDB client (owned by router via CliContext) ==================
         // Bypass VPN by binding to the physical network interface.
         // Falls back to default HttpClient if no physical interface is detected.
-        var bypassClient = NetworkInterfaceHelper.CreateBypassVpnHttpClient();
+        var bypassClient = NetworkInterfaceHelper.CreateBypassVpnHttpClient()
+            ?? new HttpClient();
         // The shared client carries no secret; the PeeringDB key travels per-request instead.
         var peeringDbHttp = ClassifierFactory.CreatePeeringDbHttpClient(bypassClient);
 

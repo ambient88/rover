@@ -66,6 +66,63 @@ public class WhoisResolverParseTests
     }
 
     [Fact]
+    public void Parse_Apnic_UsesDescrField_AndAbuseMailbox()
+    {
+        const string apnic = """
+            descr:          Big Asia Hosting
+            country:        SG
+            abuse-mailbox:  abuse@bigasia.example
+            """;
+        var r = WhoisResolver.ParseWhoisResponse("whois.apnic.net", apnic);
+
+        r!.Organization.Should().Be("Big Asia Hosting");
+        r.Country.Should().Be("SG");
+        r.Rir.Should().Be("APNIC");
+        r.AbuseEmail.Should().Be("abuse@bigasia.example");
+    }
+
+    [Fact]
+    public void Parse_Lacnic_UsesOwnerField()
+    {
+        const string lacnic = """
+            owner:      Provedor Brasil Ltda
+            country:    BR
+            """;
+        var r = WhoisResolver.ParseWhoisResponse("whois.lacnic.net", lacnic);
+
+        r!.Organization.Should().Be("Provedor Brasil Ltda");
+        r.Rir.Should().Be("LACNIC");
+    }
+
+    [Fact]
+    public void Parse_WebsiteFromRemarks_IsExtracted()
+    {
+        const string resp = """
+            OrgName: Some Host
+            remarks: website https://some-host.example/about
+            """;
+        var r = WhoisResolver.ParseWhoisResponse("whois.arin.net", resp);
+
+        r!.Website.Should().StartWith("https://some-host.example");
+    }
+
+    [Fact]
+    public void Parse_ExtractsRegistrationAndUpdatedDates_AndStatus()
+    {
+        const string resp = """
+            OrgName: X
+            Registration Date: 2015-03-01
+            Updated: 2021-07-15
+            status: allocated
+            """;
+        var r = WhoisResolver.ParseWhoisResponse("whois.arin.net", resp);
+
+        r!.RegistrationDate.Should().Be(new DateTime(2015, 3, 1));
+        r.UpdatedDate.Should().Be(new DateTime(2021, 7, 15));
+        r.Status.Should().Be("allocated");
+    }
+
+    [Fact]
     public void Parse_LongResponse_RawPreviewTruncated()
     {
         var big = "OrgName: X\n" + new string('y', 1000);

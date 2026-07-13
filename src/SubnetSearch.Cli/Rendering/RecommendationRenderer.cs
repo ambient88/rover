@@ -92,9 +92,9 @@ public static class RecommendationRenderer
             }
 
             if (!string.IsNullOrWhiteSpace(r.Website))
-                AnsiConsole.MarkupLine($"        Website:    [link={r.Website}]{Markup.Escape(r.Website)}[/]");
+                AnsiConsole.MarkupLine($"        Website:    {SafeMarkup.Link(r.Website)}");
             if (!string.IsNullOrWhiteSpace(r.PricingUrl))
-                AnsiConsole.MarkupLine($"        [green]Pricing:[/]    [link={r.PricingUrl}]{Markup.Escape(r.PricingUrl)}[/]");
+                AnsiConsole.MarkupLine($"        [green]Pricing:[/]    {SafeMarkup.Link(r.PricingUrl)}");
             if (showInRoute && r.InRoute)
                 AnsiConsole.MarkupLine($"        [green]In route:[/]   AS{r.Asn} seen in traceroute path");
 

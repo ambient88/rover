@@ -5,6 +5,9 @@ using SubnetSearch.Data;
 
 namespace SubnetSearch.Classification;
 
+// Composition root: wires the classifier object graph from data files + HTTP clients. Exercised
+// end-to-end by the CLI E2E tests, not unit tests — excluded so it doesn't skew the unit metric.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class ClassifierFactory
 {
     public static async Task<IIpClassifier> CreateAsync(
@@ -67,7 +70,8 @@ public static class ClassifierFactory
             hostingTypeResolver,
             dnsResolver,
             geolocator,
-            reputationChecker);
+            reputationChecker,
+            peeringDbHttpClient == null ? peeringDbHttp : null);
     }
 
     public static async Task<IDomainClassifier> CreateDomainClassifierAsync(
@@ -78,7 +82,7 @@ public static class ClassifierFactory
         var ipClassifier  = await CreateAsync(dataDir, peeringDbHttpClient: peeringDbHttpClient, peeringDbKey: peeringDbKey);
         IDomainWhoisResolver domainWhois = new DomainWhoisResolver();
         IDnsResolver dnsResolver         = new DnsResolver();
-        return new DomainClassifier(ipClassifier, domainWhois, dnsResolver);
+        return new DomainClassifier(ipClassifier, domainWhois, dnsResolver, ownsIpClassifier: true);
     }
 
     public static async Task<IBatchClassifier> CreateBatchClassifierAsync(
@@ -94,9 +98,7 @@ public static class ClassifierFactory
         return new BatchClassifier(ipClassifier, domainClassifier, new InMemoryCache());
     }
 
-    // The PeeringDB key must never live on the shared client's DefaultRequestHeaders (that leaked
-    // it to unrelated hosts — T-03-01). The key travels per-request via PeeringDbWebsiteResolver /
-    // the connectivity probe instead (D-03), so this factory takes no key at all.
+    // Authentication is attached to individual PeeringDB requests.
     public static HttpClient CreatePeeringDbHttpClient(HttpClient? bypassClient = null)
     {
         var client = bypassClient ?? new HttpClient();

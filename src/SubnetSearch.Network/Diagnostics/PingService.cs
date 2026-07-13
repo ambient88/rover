@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Network;
 
+// ICMP ping diagnostics over live sockets / OS ping — integration/manual-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class PingService : IPingService
 {
     // Linux/macOS: rtt min/avg/max/mdev = 1.2/3.4/5.6/0.8 ms

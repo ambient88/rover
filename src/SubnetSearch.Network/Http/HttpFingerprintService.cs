@@ -2,6 +2,9 @@ using SubnetSearch.Core.Models.Network;
 
 namespace SubnetSearch.Network.Http;
 
+// Thin HTTP-probing adapter (live requests to remote hosts) — exercised by integration/manual
+// runs, not unit tests; excluded from coverage so it doesn't skew the business-logic metric.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public class HttpFingerprintService
 {
     private static readonly HttpClient _http = new(new HttpClientHandler

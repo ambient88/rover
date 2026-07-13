@@ -8,12 +8,13 @@ public class BadAsnLoader
         if (!File.Exists(filePath))
             return asns;
 
-        var lines = await File.ReadAllLinesAsync(filePath);
-        foreach (var line in lines)
+        string content = await File.ReadAllTextAsync(filePath);
+        foreach (var token in content.Split(
+                     [' ', '\t', '\r', '\n', ','],
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            var trimmed = line.Trim();
+            var trimmed = token;
             if (trimmed.StartsWith('#')) continue;
-            // Убираем префикс "AS" если есть
             if (trimmed.StartsWith("AS", StringComparison.OrdinalIgnoreCase))
                 trimmed = trimmed[2..];
             if (uint.TryParse(trimmed, out var asn))

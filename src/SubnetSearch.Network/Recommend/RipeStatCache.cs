@@ -15,6 +15,10 @@ public class RipeStatCache
     private readonly ConcurrentDictionary<string, CacheEntry> _store = new();
     private int _dirty; // 0 = clean, 1 = dirty; accessed via Interlocked
 
+    // rpki_ entries now live at most RpkiAuthoritativeTtl (7 days); anything with a far larger
+    // remaining TTL is a legacy 10-year record to be dropped on load (F6).
+    private const int RpkiLegacyTtlCutoffDays = 30;
+
     private record CacheEntry(
         [property: JsonPropertyName("e")] DateTime ExpiresAt,
         [property: JsonPropertyName("d")] string   Data);
@@ -37,13 +41,23 @@ public class RipeStatCache
         if (!File.Exists(_path)) return;
         try
         {
-            var text   = await File.ReadAllTextAsync(_path);
-            var stored = JsonSerializer.Deserialize<Dictionary<string, CacheEntry>>(text);
+            await using var stream = new FileStream(
+                _path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                65_536, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var stored = await JsonSerializer.DeserializeAsync<Dictionary<string, CacheEntry>>(stream);
             if (stored == null) return;
             var now = DateTime.UtcNow;
+            // F6: legacy rpki_ entries were persisted with a 10-year TTL. Drop those on load so the
+            // reduced authoritative TTL actually takes effect. Fresh entries (short TTL) are kept,
+            // so this migrates the stale data without forcing a re-fetch of recent results.
+            var legacyRpkiCutoff = now.AddDays(RpkiLegacyTtlCutoffDays);
             foreach (var (k, v) in stored)
-                if (v.ExpiresAt > now)
-                    _store.TryAdd(k, v);
+            {
+                if (v.ExpiresAt <= now) continue;
+                if (k.StartsWith("rpki_", StringComparison.Ordinal) && v.ExpiresAt > legacyRpkiCutoff)
+                    continue;
+                _store.TryAdd(k, v);
+            }
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
     }
@@ -94,7 +108,12 @@ public class RipeStatCache
             // kill) посреди записи не должен оставлять усечённый JSON и молча
             // уничтожать весь накопленный кэш при следующей загрузке.
             var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(dict));
+            await using (var stream = new FileStream(
+                tmp, FileMode.Create, FileAccess.Write, FileShare.None,
+                65_536, FileOptions.Asynchronous))
+            {
+                await JsonSerializer.SerializeAsync(stream, dict);
+            }
             File.Move(tmp, _path, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)

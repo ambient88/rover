@@ -4,10 +4,7 @@ using System.Net.Sockets;
 namespace SubnetSearch.Core.Utilities;
 
 /// <summary>
-/// Triage for a single batch-input line (file list / stdin): is it an IPv4 address, a domain,
-/// an unsupported IPv6 address, or unrecognized? The classification pipeline is IPv4-only, so an
-/// IPv6 address must be filtered out at input time — otherwise it reaches the hosting classifier,
-/// faults its task, and aborts the whole batch (F18).
+/// Classifies one line before it enters the IPv4-only batch pipeline.
 /// </summary>
 public enum BatchInputKind
 {

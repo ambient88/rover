@@ -68,4 +68,26 @@ public class Ip2AsnLoaderTests
         }
         finally { File.Delete(path); }
     }
+
+    [Fact]
+    public async Task Load_CorruptCache_RebuildsFromSource()
+    {
+        var path = WriteGzip("1.0.0.0\t1.0.0.255\t13335\tUS\tCLOUDFLARENET\n");
+        var cacheDir = Path.Combine(Path.GetTempPath(), $"ip2asn-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var loader = new Ip2AsnLoader(cacheDir);
+            (await loader.LoadAsync(path)).Should().ContainSingle();
+            await File.WriteAllTextAsync(Path.Combine(cacheDir, "ip2asn-v1.bin"), "broken");
+
+            var records = await loader.LoadAsync(path);
+
+            records.Should().ContainSingle().Which.Asn.Should().Be(13335u);
+        }
+        finally
+        {
+            File.Delete(path);
+            if (Directory.Exists(cacheDir)) Directory.Delete(cacheDir, true);
+        }
+    }
 }

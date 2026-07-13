@@ -1,6 +1,8 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using SubnetSearch.Core.Utilities;
+
 namespace SubnetSearch.Classification;
 
 /// <summary>Профиль сети из as.json для gate long-tail: транзитная роль + охват (reach).</summary>
@@ -8,6 +10,15 @@ public readonly record struct AsnNetworkProfile(string? NetworkRole, long Reach)
 
 public class AsnMetadataParser
 {
+    private const int CacheMagic = 0x41534D44;
+    private const int CacheVersion = 1;
+    private readonly string? _cacheDirectory;
+
+    public AsnMetadataParser(string? cacheDirectory = null)
+    {
+        _cacheDirectory = cacheDirectory;
+    }
+
     /// <summary>
     /// Reads as.json once and returns all three data structures.
     /// </summary>
@@ -73,13 +84,129 @@ public class AsnMetadataParser
         return map;
     }
 
-    private async Task<List<AsMetadataEntry>> LoadAllEntriesAsync(string jsonFilePath)
+    private Task<List<AsMetadataEntry>> LoadAllEntriesAsync(string jsonFilePath)
     {
         if (!File.Exists(jsonFilePath))
-            return new List<AsMetadataEntry>();
+            return Task.FromResult(new List<AsMetadataEntry>());
 
-        var json = await File.ReadAllTextAsync(jsonFilePath);
-        return JsonSerializer.Deserialize<List<AsMetadataEntry>>(json) ?? new List<AsMetadataEntry>();
+        return Task.Run(() => LoadEntries(jsonFilePath));
+    }
+
+    private List<AsMetadataEntry> LoadEntries(string jsonFilePath)
+    {
+        var source = new FileInfo(jsonFilePath);
+        string cachePath = GetCachePath(source);
+        if (TryReadCache(cachePath, source, out var cached))
+            return cached;
+
+        using var stream = File.OpenRead(jsonFilePath);
+        var entries = JsonSerializer.Deserialize<List<AsMetadataEntry>>(stream) ?? [];
+        TryWriteCache(cachePath, source, entries);
+        return entries;
+    }
+
+    private string GetCachePath(FileInfo source)
+    {
+        string directory = _cacheDirectory ?? DerivedCachePath.ForDataDirectory(
+            source.DirectoryName ?? Directory.GetCurrentDirectory(),
+            "classification");
+        return Path.Combine(directory, "as-metadata-v1.bin");
+    }
+
+    private static bool TryReadCache(
+        string cachePath,
+        FileInfo source,
+        out List<AsMetadataEntry> entries)
+    {
+        entries = [];
+        try
+        {
+            if (!File.Exists(cachePath)) return false;
+            using var reader = new BinaryReader(File.OpenRead(cachePath));
+            if (reader.ReadInt32() != CacheMagic ||
+                reader.ReadInt32() != CacheVersion ||
+                reader.ReadInt64() != source.Length ||
+                reader.ReadInt64() != source.LastWriteTimeUtc.Ticks)
+                return false;
+
+            int count = reader.ReadInt32();
+            if (count < 0 || count > 2_000_000) return false;
+            entries = new List<AsMetadataEntry>(count);
+            for (int i = 0; i < count; i++)
+            {
+                uint asn = reader.ReadUInt32();
+                string? website = ReadNullableString(reader);
+                string? organization = ReadNullableString(reader);
+                string? category = ReadNullableString(reader);
+                string? networkRole = ReadNullableString(reader);
+                long reach = reader.ReadInt64();
+                entries.Add(new AsMetadataEntry(
+                    asn,
+                    website,
+                    organization,
+                    category == null && networkRole == null
+                        ? null
+                        : new AsMetadata(category, networkRole),
+                    new AsStats(new AsConnectivity(reach))));
+            }
+            return reader.BaseStream.Position == reader.BaseStream.Length;
+        }
+        catch
+        {
+            entries = [];
+            return false;
+        }
+    }
+
+    private static void TryWriteCache(
+        string cachePath,
+        FileInfo source,
+        List<AsMetadataEntry> entries)
+    {
+        string? tempPath = null;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
+            tempPath = cachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var writer = new BinaryWriter(File.Create(tempPath)))
+            {
+                writer.Write(CacheMagic);
+                writer.Write(CacheVersion);
+                writer.Write(source.Length);
+                writer.Write(source.LastWriteTimeUtc.Ticks);
+                writer.Write(entries.Count);
+                foreach (var entry in entries)
+                {
+                    writer.Write(entry.Asn);
+                    WriteNullableString(writer, entry.Website);
+                    WriteNullableString(writer, entry.Organization);
+                    WriteNullableString(writer, entry.Metadata?.Category);
+                    WriteNullableString(writer, entry.Metadata?.NetworkRole);
+                    writer.Write(entry.Stats?.Connectivity?.Reach ?? 0);
+                }
+            }
+            File.Move(tempPath, cachePath, true);
+            tempPath = null;
+        }
+        catch
+        {
+        }
+        finally
+        {
+            if (tempPath != null)
+            {
+                try { File.Delete(tempPath); } catch { }
+            }
+        }
+    }
+
+    private static string? ReadNullableString(BinaryReader reader) =>
+        reader.ReadBoolean() ? reader.ReadString() : null;
+
+    private static void WriteNullableString(BinaryWriter writer, string? value)
+    {
+        writer.Write(value != null);
+        if (value != null) writer.Write(value);
     }
 
     private record AsMetadataEntry(

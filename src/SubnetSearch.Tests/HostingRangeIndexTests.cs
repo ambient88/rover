@@ -36,7 +36,6 @@ public class HostingRangeIndexTests : IDisposable
         hit.Value.Website.Should().Be("https://acme.example", "схема добавляется, если её нет");
     }
 
-    // F7: a provider name containing a quoted comma must not shift the website column.
     [Fact]
     public async Task Load_IpcatQuotedComma_ParsesProviderAndWebsite()
     {
@@ -88,6 +87,18 @@ public class HostingRangeIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadRanges_ReadsRangesWithoutBuildingLookupSegments()
+    {
+        Write("ipcat-datacenters.csv", "1.0.0.0,1.0.0.255,\"A\",\"a.example\"\n");
+        var index = new HostingRangeIndex();
+
+        await index.LoadRangesAsync(_dir);
+
+        index.Ranges.Should().ContainSingle();
+        index.Find(IpConverter.IpToUint("1.0.0.1")).Should().BeNull();
+    }
+
+    [Fact]
     public async Task Load_NoFiles_EmptyIndex() // краевой случай: источников нет
     {
         var index = new HostingRangeIndex();
@@ -107,11 +118,35 @@ public class HostingRangeIndexTests : IDisposable
         index.Find(IpConverter.IpToUint("8.8.8.8")).Should().BeNull();
     }
 
-    // Regression for F1: a wide range whose midpoint neighbour starts after the queried IP made
-    // the old start-only binary search recurse left and miss the covering range entirely.
-    // Layout (sorted by StartIp): Wide[.0-.200], Nested[.100-.150], Other[10.0.1.0-...].
-    // Querying 10.0.0.175 lands on Nested (start .100), sees .175 > .150, jumps right to Other
-    // (start 10.0.1.0 > .175), then null — even though Wide covers it.
+    [Fact]
+    public async Task Load_CorruptIndexCache_RebuildsFromSource()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(Path.Combine(cacheDir, "hosting-index-v1.bin"), "not a valid binary cache");
+
+        var index = new HostingRangeIndex(cacheDir);
+        await index.LoadAsync(_dir); // corrupt cache → TryReadCache fails → rebuild from CSV
+
+        index.Find(IpConverter.IpToUint("10.0.0.5"))!.Value.ProviderName.Should().Be("H");
+    }
+
+    [Fact]
+    public async Task LoadRanges_ThenLoad_ReusesRangesCacheAndBuildsIndex()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+
+        var ranges = new HostingRangeIndex(cacheDir);
+        await ranges.LoadRangesAsync(_dir); // ranges-only cache (no lookup segments)
+        ranges.Count.Should().Be(1);
+
+        var full = new HostingRangeIndex(cacheDir);
+        await full.LoadAsync(_dir); // reuses ranges cache, builds the lookup index
+        full.Find(IpConverter.IpToUint("10.0.0.5")).HasValue.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Find_OverlappingRanges_FindsCoveringWideRange()
     {
@@ -127,7 +162,6 @@ public class HostingRangeIndexTests : IDisposable
         hit!.Value.ProviderName.Should().Be("Wide");
     }
 
-    // When several ranges cover the IP, the most specific (latest-starting) one wins.
     [Fact]
     public async Task Find_NestedRanges_ReturnsMostSpecific()
     {
@@ -142,7 +176,6 @@ public class HostingRangeIndexTests : IDisposable
             .Should().Be("Nested", "the narrower nested range is more specific than the wide one");
     }
 
-    // Boundary addresses (first and last of a range) must be covered even under overlap.
     [Fact]
     public async Task Find_RangeBoundaries_AreCovered()
     {
@@ -155,5 +188,33 @@ public class HostingRangeIndexTests : IDisposable
         index.Find(IpConverter.IpToUint("10.0.0.0")).HasValue.Should().BeTrue("start of Wide");
         index.Find(IpConverter.IpToUint("10.0.0.200")).HasValue.Should().BeTrue("end of Wide");
         index.Find(IpConverter.IpToUint("10.0.0.201")).Should().BeNull("just past the end");
+    }
+
+    [Fact]
+    public async Task Find_RangeEndingAtMaximumAddress_IsCovered()
+    {
+        Write("ipcat-datacenters.csv",
+            "255.255.255.0,255.255.255.255,\"LastRange\",\"last.example\"\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        index.Find(uint.MaxValue)!.Value.ProviderName.Should().Be("LastRange");
+    }
+
+    [Fact]
+    public async Task Load_SourceChange_InvalidatesCache()
+    {
+        var cacheDir = Path.Combine(_dir, "cache");
+        string sourcePath = Path.Combine(_dir, "ipcat-datacenters.csv");
+        Write("ipcat-datacenters.csv", "1.0.0.0,1.0.0.255,First,first.example\n");
+        var first = new HostingRangeIndex(cacheDir);
+        await first.LoadAsync(_dir);
+
+        Write("ipcat-datacenters.csv", "1.0.0.0,1.0.0.255,Other,other.example\n");
+        File.SetLastWriteTimeUtc(sourcePath, DateTime.UtcNow.AddSeconds(2));
+        var second = new HostingRangeIndex(cacheDir);
+        await second.LoadAsync(_dir);
+
+        second.Find(IpConverter.IpToUint("1.0.0.1"))!.Value.ProviderName.Should().Be("Other");
     }
 }

@@ -10,7 +10,7 @@
         <Configuration>
           <Format>cobertura</Format>
           <ExcludeByFile>**/*.g.cs,**/*.Generated.cs,**/obj/**</ExcludeByFile>
-          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
           <SkipAutoProps>true</SkipAutoProps>
           <UseSourceLink>false</UseSourceLink>
         </Configuration>

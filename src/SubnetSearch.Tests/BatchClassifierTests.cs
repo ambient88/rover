@@ -59,7 +59,7 @@ public class BatchClassifierTests
 
         await sut.ClassifyIpsAsync(new[] { "1.1.1.1", "1.1.1.1", "1.1.1.1" });
 
-        ipc.Calls.Should().Be(1, "одинаковый IP классифицируется один раз (кэш)");
+        ipc.Calls.Should().Be(1, "the same IP is classified once (cache)");
     }
 
     // Tracks how many classifications run concurrently so we can assert the worker pool is bounded.
@@ -80,7 +80,7 @@ public class BatchClassifierTests
     }
 
     [Fact]
-    public async Task ClassifyIps_BoundsConcurrency_NeverExceedsLimit() // F4: bounded worker pool
+    public async Task ClassifyIps_BoundsConcurrency_NeverExceedsLimit()
     {
         var ipc = new ConcurrencyTrackingClassifier();
         var sut = new BatchClassifier(ipc, new StubDomainClassifier());
@@ -93,7 +93,7 @@ public class BatchClassifierTests
     }
 
     [Fact]
-    public async Task ClassifyIps_PreCancelledToken_Throws() // F4/F11: cancellation observed
+    public async Task ClassifyIps_PreCancelledToken_Throws()
     {
         var sut = new BatchClassifier(new ConcurrencyTrackingClassifier(), new StubDomainClassifier());
         var ips = Enumerable.Range(0, 40).Select(i => $"9.9.9.{i}").ToArray();
@@ -102,6 +102,22 @@ public class BatchClassifierTests
 
         await sut.Invoking(s => s.ClassifyIpsAsync(ips, null, cts.Token))
             .Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ClassifyIps_MidFlightCancellation_StopsWaiting()
+    {
+        var classifier = new BlockingIpClassifier();
+        var sut = new BatchClassifier(classifier, new StubDomainClassifier());
+        using var cts = new CancellationTokenSource();
+
+        var classification = sut.ClassifyIpsAsync(["9.9.9.9"], null, cts.Token);
+        await classifier.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        cts.Cancel();
+
+        var action = async () => await classification.WaitAsync(TimeSpan.FromSeconds(1));
+        await action.Should().ThrowAsync<OperationCanceledException>();
+        classifier.Complete();
     }
 
     [Fact]
@@ -122,6 +138,25 @@ public class BatchClassifierTests
         results.Should().HaveCount(2);
         progress.Items.Should().HaveCount(2);
         progress.Items.Max(p => p.ProcessedItems).Should().Be(2);
-        progress.Items.Max(p => p.HostingItems).Should().Be(1, "только host-a.* даёт hosting IP");
+        progress.Items.Max(p => p.HostingItems).Should().Be(1, "only host-a.* yields a hosting IP");
+    }
+
+    private sealed class BlockingIpClassifier : IIpClassifier
+    {
+        private readonly TaskCompletionSource<ClassificationResult> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<ClassificationResult> ClassifyAsync(
+            string ip, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            return _completion.Task;
+        }
+
+        public void Complete() => _completion.TrySetResult(
+            new ClassificationResult(false, null, null, null, null, "stub"));
     }
 }

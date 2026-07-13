@@ -27,9 +27,13 @@ public static class BgpToolsTagLoader
     // (резолвер деградирует до категорий as.json).
     public static async Task<IReadOnlyDictionary<string, HashSet<uint>>> LoadAllAsync(string dataDir)
     {
-        var result = new Dictionary<string, HashSet<uint>>();
-        foreach (var tag in Tags)
-            result[tag] = await LoadTagAsync(Path.Combine(dataDir, FileName(tag)));
+        var loads = Tags
+            .Select(tag => LoadTagAsync(Path.Combine(dataDir, FileName(tag))))
+            .ToArray();
+        var loaded = await Task.WhenAll(loads);
+        var result = new Dictionary<string, HashSet<uint>>(Tags.Length);
+        for (int i = 0; i < Tags.Length; i++)
+            result[Tags[i]] = loaded[i];
         return result;
     }
 

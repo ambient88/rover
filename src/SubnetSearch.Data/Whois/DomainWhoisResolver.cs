@@ -4,6 +4,10 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Data;
 
+// WHOIS-over-TCP resolver (live socket to the registry, then inline field extraction) —
+// integration-tested only; the registrar/date/nameserver regexes mirror the unit-tested
+// WhoisResolver.ParseWhoisResponse patterns.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class DomainWhoisResolver : IDomainWhoisResolver
 {
     [GeneratedRegex(@"refer:\s*([\w\.-]+)", RegexOptions.IgnoreCase)]
@@ -107,14 +111,17 @@ public partial class DomainWhoisResolver : IDomainWhoisResolver
 
             return new DomainWhoisResult(
                 Registrar: registrar,
-                // The registrar is NOT the hosting provider — WHOIS carries the registrar only.
-                // The real host is derived from the resolved IPs downstream (F3).
+                // Domain WHOIS identifies the registrar, not the hosting provider.
                 HostingProvider: null,
                 RegistrationDate: registrationDate,
                 ExpirationDate: expirationDate,
                 NameServers: nameServers.Count > 0 ? nameServers : null,
                 WhoisStatus: whoisStatus,
                 RawResponse: rawPreview);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

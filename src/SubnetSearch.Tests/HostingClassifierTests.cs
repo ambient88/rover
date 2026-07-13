@@ -44,10 +44,15 @@ public class HostingClassifierTests
     private sealed class StubDns : IDnsResolver
     {
         private readonly string? _ptr;
+        public int ReverseCalls { get; private set; }
         public StubDns(string? ptr) => _ptr = ptr;
         public Task<IReadOnlyList<IPAddress>> ResolveAllIpAsync(string d, CancellationToken ct = default)
             => Task.FromResult((IReadOnlyList<IPAddress>)Array.Empty<IPAddress>());
-        public Task<string?> ReverseDnsAsync(IPAddress ip, CancellationToken ct = default) => Task.FromResult(_ptr);
+        public Task<string?> ReverseDnsAsync(IPAddress ip, CancellationToken ct = default)
+        {
+            ReverseCalls++;
+            return Task.FromResult(_ptr);
+        }
     }
 
     private sealed class StubGeo : IGeolocator
@@ -113,6 +118,35 @@ public class HostingClassifierTests
     }
 
     [Fact]
+    public async Task Classify_HostingTypeAndResultShareOnePtrLookup()
+    {
+        var range = new HostingIpRange
+        {
+            StartIp = IpConverter.IpToUint("5.6.7.0"),
+            EndIp = IpConverter.IpToUint("5.6.7.255"),
+            ProviderName = "RangeHost"
+        };
+        var dns = new StubDns("vm-42.rangehost.example");
+        var website = new StubWebsite();
+        var sut = new HostingClassifier(
+            new StubRange(range),
+            new IpRangeIndex([Rec("5.6.7.0", "5.6.7.255", 64500, "RangeHost")]),
+            [64500],
+            [],
+            website,
+            null,
+            false,
+            new HostingTypeResolver(dns, website),
+            dns);
+
+        var result = await sut.ClassifyAsync("5.6.7.8");
+
+        dns.ReverseCalls.Should().Be(1);
+        result.Ptr.Should().Be("vm-42.rangehost.example");
+        result.HostingType.Should().Be(HostingType.Vps);
+    }
+
+    [Fact]
     public async Task Classify_Ip2AsnHit_AsnInHostingSet_IsHosting()
     {
         var sut = Build(
@@ -140,19 +174,75 @@ public class HostingClassifierTests
         r.Source.Should().Be("IP2ASN");
     }
 
-    // F12: a curated CDN ASN (Akamai 20940) must win over the generic as.json "hosting" category.
-    // Akamai's org string is not in NonHostingOrgs, so only the ASN-based CDN override applies.
     [Fact]
     public async Task Classify_CuratedCdnAsn_OverridesHostingCategory()
     {
         var sut = Build(
             records: new[] { Rec("23.1.2.0", "23.1.2.255", 20940, "Akamai Technologies") },
-            hostingAsns: new HashSet<uint> { 20940 }); // as.json marks it hosting — must be overridden
+            hostingAsns: new HashSet<uint> { 20940 });
 
         var r = await sut.ClassifyAsync("23.1.2.5");
 
         r.IsHosting.Should().BeFalse("a curated CDN is not rentable hosting");
         r.HostingType.Should().Be(HostingType.Cdn, "it is tagged as CDN instead");
+    }
+
+    [Fact]
+    public async Task Classify_CuratedCdnAsn_OverridesHostingRange()
+    {
+        var range = new HostingIpRange
+        {
+            StartIp = IpConverter.IpToUint("23.1.2.0"),
+            EndIp = IpConverter.IpToUint("23.1.2.255"),
+            ProviderName = "Akamai Technologies"
+        };
+        var sut = Build(
+            range: range,
+            records: [Rec("23.1.2.0", "23.1.2.255", 20940, "Akamai Technologies")],
+            hostingAsns: [20940]);
+
+        var result = await sut.ClassifyAsync("23.1.2.5");
+
+        result.IsHosting.Should().BeFalse();
+        result.HostingType.Should().Be(HostingType.Cdn);
+    }
+
+    [Fact]
+    public async Task Classify_HostingWithWhois_ResolvesWebsiteAndDates()
+    {
+        var whois = new StubWhois(new WhoisResult(
+            "HostingCorp", "DE", null, new DateTime(2019, 1, 1), new DateTime(2020, 6, 1),
+            "active", "raw", AbuseEmail: "abuse@hostingcorp.example", Rir: "RIPE"));
+        var website = new StubWebsite { Website = "https://hostingcorp.example" };
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "HostingCorp") },
+            hostingAsns: new HashSet<uint> { 64500 },
+            whois: whois, website: website);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeTrue();
+        r.Website.Should().Be("https://hostingcorp.example");
+        r.RegistrationDate.Should().Be(new DateTime(2019, 1, 1));
+        r.AbuseEmail.Should().Be("abuse@hostingcorp.example");
+    }
+
+    [Fact]
+    public async Task Classify_Hosting_PopulatesPeeringCountFromPeeringDb()
+    {
+        var website = new StubWebsite
+        {
+            Info = new PeeringDbNetworkInfo("https://hostco.example", "content", IxCount: 7, NetId: 99),
+        };
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "HostCo") },
+            hostingAsns: new HashSet<uint> { 64500 },
+            website: website);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeTrue();
+        r.PeeringCount.Should().Be(7);
     }
 
     [Fact]
@@ -167,6 +257,40 @@ public class HostingClassifierTests
         r.Source.Should().Be("WHOIS");
         r.Organization.Should().Be("SomeNetwork LLC");
         r.Country.Should().Be("FR");
+    }
+
+    // WHOIS org that is a known non-hosting org flips an IP2ASN "hosting" verdict back to false.
+    [Fact]
+    public async Task Classify_WhoisNonHostingOrg_OverridesHosting()
+    {
+        var whois = new StubWhois(new WhoisResult(
+            "Google LLC", "US", null, null, null, "active", "raw", Rir: "ARIN"));
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "SomeHost") },
+            hostingAsns: new HashSet<uint> { 64500 },
+            whois: whois);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeFalse("WHOIS revealed a non-hosting organization");
+    }
+
+    // Unknown ASN (neither hosting nor non-hosting) is upgraded to hosting via the PeeringDB fallback.
+    [Fact]
+    public async Task Classify_PeeringDbContentType_UpgradesToHosting()
+    {
+        var website = new StubWebsite
+        {
+            Info = new PeeringDbNetworkInfo("https://prov.example", "content", IxCount: 4, NetId: 7),
+        };
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64502, "Mystery Networks") },
+            hostingAsns: new HashSet<uint>(),
+            website: website);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeTrue("PeeringDB info_type=content marks it as hosting");
     }
 
     [Fact]

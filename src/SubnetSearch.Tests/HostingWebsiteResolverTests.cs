@@ -46,6 +46,33 @@ public class HostingWebsiteResolverTests
             .GetWebsite(null, "The ACME Company").Should().Be("https://acme.example");
 
     [Fact]
+    public void GetWebsite_PositiveSubstringResultIsMemoized()
+    {
+        var organizations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ACME"] = "https://acme.example"
+        };
+        var resolver = Resolver(byOrg: organizations);
+
+        resolver.GetWebsite(null, "The ACME Company").Should().Be("https://acme.example");
+        organizations.Clear();
+
+        resolver.GetWebsite(null, "The ACME Company").Should().Be("https://acme.example");
+    }
+
+    [Fact]
+    public void GetWebsite_NegativeSubstringResultIsMemoized()
+    {
+        var organizations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var resolver = Resolver(byOrg: organizations);
+
+        resolver.GetWebsite(null, "The ACME Company").Should().BeNull();
+        organizations["ACME"] = "https://acme.example";
+
+        resolver.GetWebsite(null, "The ACME Company").Should().BeNull();
+    }
+
+    [Fact]
     public void GetWebsite_NoMatch_ReturnsNull()
         => Resolver().GetWebsite(999999, "Totally Unknown Provider").Should().BeNull();
 

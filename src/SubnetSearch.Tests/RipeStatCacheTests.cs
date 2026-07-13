@@ -141,25 +141,60 @@ public class RipeStatCacheTests
         => SubnetSearch.Network.RipeStatClient.RpkiAuthoritativeTtl
             .Should().BeLessThanOrEqualTo(TimeSpan.FromDays(30));
 
+    // F6: legacy rpki_ entries were written with a 10-year TTL. On load they must be dropped so the
+    // reduced 7-day TTL takes effect — without re-fetching recent (short-TTL) entries.
     [Fact]
-    public async Task GetRpkiValidityRatio_IgnoresLegacyRpkiKey()
+    public async Task Load_PurgesLegacyLongTtlRpkiEntries_KeepsFreshOnes()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var legacy = DateTime.UtcNow.AddYears(10).ToString("o");   // old 3650-day entry
+            var fresh  = DateTime.UtcNow.AddDays(3).ToString("o");     // new 7-day entry
+            string json =
+                "{" +
+                $"\"rpki_1234\":{{\"e\":\"{legacy}\",\"d\":\"x\"}}," +
+                $"\"rpki_5678\":{{\"e\":\"{fresh}\",\"d\":\"x\"}}," +
+                $"\"pfx_1234\":{{\"e\":\"{legacy}\",\"d\":\"x\"}}" +
+                "}";
+            File.WriteAllText(Path.Combine(dir.FullName, "ripe_cache.json"), json);
+
+            var cache = await RipeStatCache.LoadAsync(dir.FullName);
+
+            cache.TryGet("rpki_1234", out _).Should().BeFalse("legacy 10-year RPKI entry is purged (F6)");
+            cache.TryGet("rpki_5678", out _).Should().BeTrue("fresh short-TTL RPKI entry is kept");
+            cache.TryGet("pfx_1234", out _).Should().BeTrue("only rpki_ keys are affected, not pfx_/nbr_");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
+    [Fact]
+    public async Task GetRpkiValidityRatio_UsesExistingRpkiKey()
     {
         var dir = Directory.CreateTempSubdirectory();
         try
         {
             var cache = new RipeStatCache(dir.FullName);
-            // A legacy rpki_ entry written by the old 10-year path (serialized RpkiCacheData).
             cache.Set("rpki_1234", "{\"r\":0.95}", TimeSpan.FromDays(3650));
             var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
 
             // Empty prefix set → no HTTP, authoritative null result. The legacy key must not be
-            // honoured: old code returned 0.95, the versioned key returns null.
             var ratio = await client.GetRpkiValidityRatioAsync(1234, Array.Empty<string>());
 
-            ratio.Should().BeNull("the stale 10-year rpki_ entry must be ignored after the version bump");
-            cache.TryGet("rpki2_1234", out _).Should().BeTrue("result is re-cached under the versioned key");
+            ratio.Should().Be(0.95);
         }
         finally { Directory.Delete(dir.FullName, true); }
+    }
+
+    [Fact]
+    public void RpkiCacheKey_RemainsStableWhenPrefixSetChanges()
+    {
+        string first = SubnetSearch.Network.RipeStatClient.BuildRpkiCacheKey(
+            1234, ["10.0.0.0/24"]);
+        string second = SubnetSearch.Network.RipeStatClient.BuildRpkiCacheKey(
+            1234, ["10.0.1.0/24"]);
+
+        first.Should().Be(second).And.Be("rpki_1234");
     }
 
     [Fact]

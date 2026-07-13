@@ -3,6 +3,8 @@ using System.Net.Sockets;
 
 namespace SubnetSearch.Network;
 
+// Raw UDP socket probe (live network I/O) — integration-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class UdpProbe
 {
     // Sends a single UDP datagram and interprets the result:

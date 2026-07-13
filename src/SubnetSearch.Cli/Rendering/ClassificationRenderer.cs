@@ -71,7 +71,7 @@ public static class ClassificationRenderer
             AnsiConsole.MarkupLine($"  [bold]Reputation:[/]   {rep}");
         }
         if (!string.IsNullOrWhiteSpace(result.Website))
-            AnsiConsole.MarkupLine($"  [bold]Website:[/]      [link={result.Website}]{Markup.Escape(result.Website)}[/]");
+            AnsiConsole.MarkupLine($"  [bold]Website:[/]      {SafeMarkup.Link(result.Website)}");
         else
             AnsiConsole.MarkupLine($"  [bold]Website:[/]      No data");
         AnsiConsole.MarkupLine($"  [bold]Source:[/]       {Markup.Escape(result.Source)}");
@@ -186,7 +186,7 @@ public static class ClassificationRenderer
                 Markup.Escape(res.Asn?.ToString() ?? "N/A"),
                 Markup.Escape(res.Organization ?? "N/A"),
                 Markup.Escape(res.HostingType?.ToString() ?? "N/A"),
-                res.Website != null ? $"[link={res.Website}]{Markup.Escape(res.Website)}[/]" : "N/A"
+                res.Website != null ? SafeMarkup.Link(res.Website) : "N/A"
             );
         }
 

@@ -10,6 +10,23 @@ namespace SubnetSearch.Tests;
 // established»); фолбэк идёт системным маршрутом (VPN, если активен).
 public class IpListAnalyzerTests
 {
+    private sealed class ChunkedReader(string text, int chunkSize) : TextReader
+    {
+        private int _position;
+
+        public override ValueTask<int> ReadAsync(
+            Memory<char> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_position >= text.Length) return ValueTask.FromResult(0);
+            int count = Math.Min(Math.Min(chunkSize, buffer.Length), text.Length - _position);
+            text.AsMemory(_position, count).CopyTo(buffer);
+            _position += count;
+            return ValueTask.FromResult(count);
+        }
+    }
+
     // Стаб-обработчик: отдаёт заготовленный ответ либо бросает сетевую ошибку.
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
         : HttpMessageHandler
@@ -86,7 +103,8 @@ public class IpListAnalyzerTests
         // Обратная совместимость: без fallbackHttp поведение прежнее — одна попытка.
         var (primary, ph) = FailingClient();
 
-        var act = () => IpListAnalyzer.ReadSourceAsync("https://example.com/list.txt", primary);
+        var act = () => IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", primary);
 
         await act.Should().ThrowAsync<HttpRequestException>();
         ph.Calls.Should().Be(1);
@@ -124,6 +142,30 @@ public class IpListAnalyzerTests
     }
 
     [Fact]
+    public async Task ReadSourceAsync_FallbackBlocksHostnameResolvingToPrivateAddress()
+    {
+        var (primary, _) = FailingClient();
+        var (fallback, fallbackHandler) = OkClient("1.2.3.4");
+
+        var action = () => IpListAnalyzer.ReadSourceAsync(
+            "https://localhost/list.txt", primary, fallbackHttp: fallback);
+
+        await action.Should().ThrowAsync<ArgumentException>();
+        fallbackHandler.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ExtractIpsAsync_HandlesAddressesAcrossReadBoundaries()
+    {
+        using var reader = new ChunkedReader(
+            "prefix 1.2.3.4\n5.6.7.8 suffix\n1.2.3.4", chunkSize: 3);
+
+        var result = await IpListAnalyzer.ExtractIpsAsync(reader);
+
+        result.Should().Equal("1.2.3.4", "5.6.7.8");
+    }
+
+    [Fact]
     public async Task ReadSourceAsync_GitHubBlobUrl_RewrittenForBothRoutes()
     {
         // Переписанный raw-URL используется и фолбэком — не исходный blob-URL.
@@ -135,6 +177,40 @@ public class IpListAnalyzerTests
 
         fh.LastUrl.Should().Be("https://raw.githubusercontent.com/user/repo/main/ips.txt");
     }
+
+    [Fact]
+    public async Task ReadSourceAsync_SupportsResponseLargerThanEightMiB()
+    {
+        string body = new('x', 8 * 1024 * 1024 + 1);
+        var (client, _) = OkClient(body);
+
+        string result = await IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", client);
+
+        result.Length.Should().Be(body.Length);
+    }
+
+    [Fact]
+    public void ExtractIps_SupportsMoreThanOneHundredThousandAddresses()
+    {
+        string text = string.Join('\n', Enumerable.Range(0, 100_001)
+            .Select(i => $"10.{(i >> 16) & 255}.{(i >> 8) & 255}.{i & 255}"));
+
+        var result = IpListAnalyzer.ExtractIps(text);
+
+        result.Should().HaveCount(100_001);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", false)]
+    [InlineData("169.254.169.254", false)]
+    [InlineData("10.0.0.1", false)]
+    [InlineData("::1", false)]
+    [InlineData("fc00::1", false)]
+    [InlineData("93.184.216.34", true)]
+    [InlineData("2606:4700:4700::1111", true)]
+    public void IsPublicAddress_ClassifiesNetworkBoundary(string value, bool expected)
+        => IpListAnalyzer.IsPublicAddress(IPAddress.Parse(value)).Should().Be(expected);
 
     [Theory]
     [InlineData("https://github.com/user/repo/blob/main/ips.txt",

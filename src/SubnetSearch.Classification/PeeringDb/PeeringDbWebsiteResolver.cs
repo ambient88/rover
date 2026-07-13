@@ -13,9 +13,6 @@ public class PeeringDbWebsiteResolver
     public PeeringDbWebsiteResolver(HttpClient httpClient, string? apiKey = null)
     {
         _httpClient = httpClient;
-        // Sanitize once via the shared helper: strips CR/LF/null and normalizes an
-        // empty-after-strip key (e.g. "\0"-only) to null so it is never attached as an
-        // empty Api-Key credential (WR-01/WR-02).
         _apiKey = PeeringDbAuth.Sanitize(apiKey);
     }
 
@@ -95,8 +92,7 @@ public class PeeringDbWebsiteResolver
                 return new PeeringDbNetworkInfo(net.Website, net.InfoType, net.IxCount, net.Id);
             }
         }
-        // Propagate cooperative cancellation (Ctrl+C); enrichment is optional so only
-        // network/JSON failures are swallowed and treated as "no data" (WR-03).
+        // Optional enrichment ignores network and JSON failures.
         catch (OperationCanceledException) { throw; }
         catch (HttpRequestException) { }
         catch (System.Text.Json.JsonException) { }
@@ -119,8 +115,7 @@ public class PeeringDbWebsiteResolver
                     .OrderBy(n => n)
                     .ToList()!;
         }
-        // Propagate cooperative cancellation (Ctrl+C); enrichment is optional so only
-        // network/JSON failures are swallowed and treated as "no data" (WR-03).
+        // Optional enrichment ignores network and JSON failures.
         catch (OperationCanceledException) { throw; }
         catch (HttpRequestException) { }
         catch (System.Text.Json.JsonException) { }

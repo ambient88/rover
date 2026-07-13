@@ -2,8 +2,8 @@ namespace SubnetSearch.Core.Models.Classification;
 
 public record ProviderScanResult(
     uint    Asn,
-    string? AsnHandle,        // напр. "SENKO-AS"
-    string? Organization,     // напр. "Senko Digital Ltd"
+    string? AsnHandle,        // e.g. "SENKO-AS"
+    string? Organization,     // e.g. "Senko Digital Ltd"
     string? Website,
     string? InfoType,
     string? CountryCode,
@@ -11,8 +11,8 @@ public record ProviderScanResult(
     IReadOnlyList<string>?        IxLocations,
     IReadOnlyList<IpPrefix>       Prefixes,
     IReadOnlyList<ProviderUpstream> Upstreams,
-    // Sum of host counts across all prefixes; long to avoid 32-bit overflow (F20).
+    // Unique address count across overlapping prefixes.
     long    TotalIpCount,
-    // Если поиск по имени вернул несколько кандидатов
+    // Set when a name search returned several candidates
     IReadOnlyList<(uint Asn, string? Name, string? Description)>? OtherCandidates = null
 );

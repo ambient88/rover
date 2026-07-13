@@ -18,7 +18,9 @@ public class HostingClassifier : IIpClassifier, IDisposable
     private readonly IDnsResolver _dnsResolver;
     private readonly IGeolocator? _geolocator;
     private readonly IIpReputationChecker? _reputationChecker;
+    private readonly IDisposable? _ownedResource;
     private readonly bool _forceWhois;
+    private int _disposed;
 
     public HostingClassifier(
         IHostingIpRangeProvider hostingRangeProvider,
@@ -31,7 +33,8 @@ public class HostingClassifier : IIpClassifier, IDisposable
         IHostingTypeResolver hostingTypeResolver,
         IDnsResolver dnsResolver,
         IGeolocator? geolocator = null,
-        IIpReputationChecker? reputationChecker = null)
+        IIpReputationChecker? reputationChecker = null,
+        IDisposable? ownedResource = null)
     {
         _hostingRangeProvider  = hostingRangeProvider  ?? throw new ArgumentNullException(nameof(hostingRangeProvider));
         _ipIndex               = ipIndex               ?? throw new ArgumentNullException(nameof(ipIndex));
@@ -43,6 +46,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
         _dnsResolver           = dnsResolver           ?? throw new ArgumentNullException(nameof(dnsResolver));
         _geolocator            = geolocator;
         _reputationChecker     = reputationChecker;
+        _ownedResource         = ownedResource;
         _forceWhois            = forceWhois;
     }
 
@@ -56,7 +60,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
             ? _geolocator.LocateAsync(ipAddress, cancellationToken)
             : Task.FromResult<GeoLocation?>(null);
 
-        var core = await ClassifyCoreAsync(ipAddress, cancellationToken);
+        var core = await ClassifyCoreAsync(ipAddress, ptrTask, cancellationToken);
         string? ptr         = await ptrTask;
         GeoLocation? geo    = await geoTask;
 
@@ -110,7 +114,10 @@ public class HostingClassifier : IIpClassifier, IDisposable
         };
     }
 
-    private async Task<ClassificationResult> ClassifyCoreAsync(string ipAddress, CancellationToken cancellationToken)
+    private async Task<ClassificationResult> ClassifyCoreAsync(
+        string ipAddress,
+        Task<string?> ptrTask,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -119,16 +126,19 @@ public class HostingClassifier : IIpClassifier, IDisposable
             // Reputation — O(1) dictionary lookup, performed immediately.
             int? reputation = _reputationChecker?.Check(ipInt);
 
-            // 1. Диапазоны хостингов
+            // 1. Hosting ranges
             var hostingRange = _hostingRangeProvider.Find(ipInt);
             if (hostingRange.HasValue)
             {
                 var hr  = hostingRange.Value;
                 var rec = _ipIndex.Find(ipInt);
                 uint? asn = rec.HasValue && rec.Value.Asn > 0 ? rec.Value.Asn : null;
+                bool isCdn = asn.HasValue && ClassificationRules.CdnAsns.Contains(asn.Value);
 
-                var hostingType = await _hostingTypeResolver.ResolveAsync(
-                    ipAddress, asn, hr.ProviderName, cancellationToken);
+                var hostingType = isCdn
+                    ? HostingType.Cdn
+                    : await _hostingTypeResolver.ResolveWithPtrAsync(
+                        ipAddress, asn, hr.ProviderName, await ptrTask, cancellationToken);
 
                 string? website = _websiteResolver.GetWebsite(asn, hr.ProviderName, hr.Website);
                 if (string.IsNullOrWhiteSpace(website) && asn.HasValue)
@@ -147,7 +157,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
                 }
 
                 return new ClassificationResult(
-                    IsHosting:       true,
+                    IsHosting:       !isCdn,
                     Asn:             asn,
                     Organization:    hr.ProviderName,
                     Country:         rec.HasValue ? rec.Value.Country : null,
@@ -169,9 +179,6 @@ public class HostingClassifier : IIpClassifier, IDisposable
                 uint   asn     = record.Value.Asn;
                 string ipRange = IpConverter.ToCidr(record.Value.StartIp, record.Value.EndIp);
 
-                // A curated CDN ASN is authoritative: it must win over the generic as.json
-                // "hosting" category and over the PeeringDB "Content" fallback below, so a CDN is
-                // never shown as rentable hosting (F12). It is tagged Type=CDN further down.
                 bool isCdn = ClassificationRules.CdnAsns.Contains(asn);
                 bool isNonHosting = isCdn
                                  || ClassificationRules.IsNonHostingOrg(org)
@@ -228,14 +235,13 @@ public class HostingClassifier : IIpClassifier, IDisposable
                 int? peeringCount = null;
                 IReadOnlyList<string>? ixLocations = null;
 
-                // Tag known CDN ASNs for display even when IsHosting=false.
                 if (!isHosting && ClassificationRules.CdnAsns.Contains(asn))
                     hostingType = HostingType.Cdn;
 
                 if (isHosting)
                 {
-                    hostingType = await _hostingTypeResolver.ResolveAsync(
-                        ipAddress, asn, org, cancellationToken);
+                    hostingType = await _hostingTypeResolver.ResolveWithPtrAsync(
+                        ipAddress, asn, org, await ptrTask, cancellationToken);
 
                     if (string.IsNullOrWhiteSpace(website))
                     {
@@ -273,7 +279,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
                 );
             }
 
-            // 3. WHOIS-фолбэк
+            // 3. WHOIS fallback
             if (_whoisResolver != null)
             {
                 var whois = await _whoisResolver.ResolveAsync(ipAddress, cancellationToken);
@@ -293,8 +299,8 @@ public class HostingClassifier : IIpClassifier, IDisposable
                     if (isHosting)
                     {
                         website     = _websiteResolver.GetWebsite(null, whois.Organization, whois.Website);
-                        hostingType = await _hostingTypeResolver.ResolveAsync(
-                            ipAddress, null, whois.Organization, cancellationToken);
+                        hostingType = await _hostingTypeResolver.ResolveWithPtrAsync(
+                            ipAddress, null, whois.Organization, await ptrTask, cancellationToken);
                     }
 
                     return new ClassificationResult(
@@ -325,5 +331,10 @@ public class HostingClassifier : IIpClassifier, IDisposable
         }
     }
 
-    public void Dispose() => _geolocator?.Dispose();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { _geolocator?.Dispose(); }
+        finally { _ownedResource?.Dispose(); }
+    }
 }

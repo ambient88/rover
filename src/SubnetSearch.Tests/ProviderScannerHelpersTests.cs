@@ -9,7 +9,7 @@ public class ProviderScannerHelpersTests
     [InlineData("1.2.3.0/24", 256L)]
     [InlineData("10.0.0.0/8",  16777216L)]
     [InlineData("1.2.3.4/32",  1L)]
-    // Wide prefixes overflow a 32-bit int: /1 = 2^31, /0 = 2^32 (F20).
+    // Wide prefixes require a 64-bit result.
     [InlineData("1.2.3.0/1",   2147483648L)]
     [InlineData("0.0.0.0/0",   4294967296L)]
     public void CalcIpCount_ComputesHostCount(string prefix, long expected)
@@ -22,6 +22,14 @@ public class ProviderScannerHelpersTests
     [InlineData("bad/prefix")]
     public void CalcIpCount_InvalidPrefix_ReturnsZero(string prefix)
         => ProviderScanner.CalcIpCount(prefix).Should().Be(0L);
+
+    [Fact]
+    public void CountUniqueAddresses_DoesNotDoubleCountNestedPrefixes()
+    {
+        var prefixes = new[] { "10.0.0.0/24", "10.0.0.0/25", "10.0.0.64/26" };
+
+        Ipv4RangeMath.CountUniqueAddresses(prefixes).Should().Be(256);
+    }
 
     [Fact]
     public void ParseHolder_SplitsHandleAndOrg()

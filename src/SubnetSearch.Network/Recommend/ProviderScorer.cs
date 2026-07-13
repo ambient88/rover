@@ -40,8 +40,23 @@ public class ProviderScorer(
     PingService          pingService,
     AbuseIpDbClient?     abuseIpDb = null,
     GreyNoiseClient?     greyNoise = null,
-    RipeStatCache?       ripeCache = null)
+    RipeStatCache?       ripeCache = null,
+    RipeStatClient?      ripeStat = null)
 {
+    private sealed class Phase1Candidate(
+        ProviderCandidate candidate,
+        double ipsumRatio,
+        bool rpkiResolved)
+    {
+        public ProviderCandidate Candidate { get; set; } = candidate;
+        public double IpsumRatio { get; } = ipsumRatio;
+        public bool RpkiResolved { get; set; } = rpkiResolved;
+    }
+
+    // Network-orchestration entry point: fans out live ping / abuse / RPKI probes per candidate and
+    // feeds them into the (unit-tested) ComputeScore + cache-serialization helpers. The probing loop
+    // itself is integration-tested — excluded so it doesn't skew the business-logic metric.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public async Task<IReadOnlyList<ProviderRecommendation>> ScoreAsync(
         IReadOnlyList<ProviderCandidate> candidates,
         int? maxPingMs,
@@ -55,30 +70,40 @@ public class ProviderScorer(
     {
         await spamhaus.LoadAsync(ct);
 
-        // Phase 1: cheap signals — reputation, RPKI (already fetched by ProviderFinder).
-        var phase1 = new System.Collections.Concurrent.ConcurrentBag<(ProviderCandidate c, double prescore, double? abuserScore, double ipsumRatio)>();
+        var phase1Candidates = new System.Collections.Concurrent.ConcurrentBag<Phase1Candidate>();
 
         await Parallel.ForEachAsync(candidates,
             new ParallelOptions { MaxDegreeOfParallelism = 15, CancellationToken = ct },
-            async (candidate, innerCt) =>
+            (candidate, innerCt) =>
             {
-                if (candidate.Prefixes.Count == 0) return;
-                if (spamhaus.IsListed(candidate.Asn)) return;
-
-                // abuser_score is only available via IP-level ipapi.is requests (not ASN-level).
-                // Skip ASN-level call here — real abuser_score is fetched in Phase 2 per anchor IP.
-                double? abuserScore = null;
+                if (candidate.Prefixes.Count == 0 || spamhaus.IsListed(candidate.Asn))
+                    return ValueTask.CompletedTask;
 
                 double ipsumRatio = ComputeIpsumRatio(candidate.Prefixes, ipsum);
-                double prescore   = ComputeScore(
-                    latencyMs: null, packetLoss: null,
-                    candidate.PeeringCount, candidate.Prefixes.Count,
-                    abuserScore, ipsumRatio, null, null,
-                    candidate.RpkiScore, candidate.TotalIpCount, weights,
-                    upstreamCount: candidate.UpstreamCount).Score;
-
-                phase1.Add((candidate, prescore, abuserScore, ipsumRatio));
+                bool rpkiResolved = ripeStat == null || candidate.RpkiScore.HasValue;
+                if (!rpkiResolved
+                    && ripeStat!.TryGetCachedRpki(
+                        candidate.Asn, candidate.Prefixes, out var cachedRpki))
+                {
+                    candidate = candidate with { RpkiScore = cachedRpki };
+                    rpkiResolved = true;
+                }
+                phase1Candidates.Add(new Phase1Candidate(
+                    candidate, ipsumRatio, rpkiResolved));
+                return ValueTask.CompletedTask;
             });
+
+        var prepared = phase1Candidates.ToList();
+        if (ripeStat != null)
+            await ResolveRpkiShortlistAsync(
+                prepared, pingTopN, pinnedAsns, weights, ripeStat, ct);
+
+        var phase1 = prepared.Select(entry =>
+        {
+            double prescore = Prescore(entry.Candidate, entry.IpsumRatio, weights);
+            return (c: entry.Candidate, prescore, abuserScore: (double?)null,
+                ipsumRatio: entry.IpsumRatio);
+        }).ToList();
 
         // Phase 2: ping top N by prescore.
         // Pinned ASNs (from --from coverage map) are always included regardless of prescore rank,
@@ -285,7 +310,122 @@ public class ProviderScorer(
         return [.. ordered.Take(returnTop)];
     }
 
-    // Scoring thresholds — tune these to adjust how the scoring function maps raw metrics to [0,1].
+    private static double Prescore(
+        ProviderCandidate candidate,
+        double ipsumRatio,
+        ScoringWeights? weights,
+        double? rpkiScore = null,
+        bool overrideRpki = false)
+        => ComputeScore(
+            latencyMs: null,
+            packetLoss: null,
+            candidate.PeeringCount,
+            candidate.Prefixes.Count,
+            abuserScore: null,
+            ipsumRatio,
+            abuseIpDbScore: null,
+            greyNoiseRatio: null,
+            overrideRpki ? rpkiScore : candidate.RpkiScore,
+            candidate.TotalIpCount,
+            weights,
+            upstreamCount: candidate.UpstreamCount).Score;
+
+    private static async Task ResolveRpkiShortlistAsync(
+        List<Phase1Candidate> entries,
+        int pingTopN,
+        IReadOnlySet<uint>? pinnedAsns,
+        ScoringWeights? weights,
+        RipeStatClient ripeStat,
+        CancellationToken ct)
+    {
+        var pinnedMisses = entries
+            .Where(entry => !entry.RpkiResolved
+                && pinnedAsns?.Contains(entry.Candidate.Asn) == true)
+            .ToList();
+        await FetchRpkiAsync(pinnedMisses, ripeStat, ct);
+
+        var nonPinned = entries
+            .Where(entry => pinnedAsns?.Contains(entry.Candidate.Asn) != true)
+            .ToList();
+        int target = Math.Min(Math.Max(0, pingTopN), nonPinned.Count);
+        if (target == 0) return;
+
+        while (true)
+        {
+            var unresolved = nonPinned.Where(entry => !entry.RpkiResolved).ToList();
+            if (unresolved.Count == 0) return;
+
+            var exact = nonPinned
+                .Where(entry => entry.RpkiResolved)
+                .Select(entry => (
+                    Entry: entry,
+                    Score: Prescore(entry.Candidate, entry.IpsumRatio, weights)))
+                .OrderByDescending(item => item.Score)
+                .ThenBy(item => item.Entry.Candidate.Asn)
+                .ToList();
+
+            IEnumerable<Phase1Candidate> eligible = unresolved;
+            if (exact.Count >= target)
+            {
+                var cutoff = exact[target - 1];
+                eligible = unresolved.Where(entry =>
+                {
+                    double upper = Math.Max(
+                        Prescore(entry.Candidate, entry.IpsumRatio, weights,
+                            rpkiScore: null, overrideRpki: true),
+                        Prescore(entry.Candidate, entry.IpsumRatio, weights,
+                            rpkiScore: 1.0, overrideRpki: true));
+                    return upper > cutoff.Score
+                        || upper == cutoff.Score
+                           && entry.Candidate.Asn < cutoff.Entry.Candidate.Asn;
+                });
+            }
+
+            var batch = eligible
+                .OrderByDescending(entry => Math.Max(
+                    Prescore(entry.Candidate, entry.IpsumRatio, weights,
+                        rpkiScore: null, overrideRpki: true),
+                    Prescore(entry.Candidate, entry.IpsumRatio, weights,
+                        rpkiScore: 1.0, overrideRpki: true)))
+                .ThenBy(entry => entry.Candidate.Asn)
+                .Take(10)
+                .ToList();
+            if (batch.Count == 0) return;
+            await FetchRpkiAsync(batch, ripeStat, ct);
+        }
+    }
+
+    private static async Task FetchRpkiAsync(
+        IReadOnlyList<Phase1Candidate> entries,
+        RipeStatClient ripeStat,
+        CancellationToken ct)
+    {
+        await Parallel.ForEachAsync(entries,
+            new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
+            async (entry, innerCt) =>
+            {
+                double? ratio = null;
+                try
+                {
+                    ratio = await ripeStat.GetRpkiValidityRatioAsync(
+                        entry.Candidate.Asn,
+                        entry.Candidate.Prefixes,
+                        maxSample: 2,
+                        ct: innerCt);
+                }
+                catch (OperationCanceledException) when (innerCt.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                }
+                entry.Candidate = entry.Candidate with { RpkiScore = ratio };
+                entry.RpkiResolved = true;
+            });
+    }
+
+    // These thresholds map raw metrics to the normalized score range.
     private const double LatencyMs_AtZeroScore    = 200.0; // >200ms → score 0 (latency component)
     private const double PeeringCount_AtMaxScore  = 50.0;  // 50+ peerings → IX score 1
     private const double UpstreamCount_AtMaxScore = 8.0;   // 8+ transit providers → upstream score 1

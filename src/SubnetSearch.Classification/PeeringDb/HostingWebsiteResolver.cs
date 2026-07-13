@@ -9,6 +9,9 @@ public class HostingWebsiteResolver : IWebsiteResolver
     private readonly Dictionary<uint, string> _byAsn;
     private readonly Dictionary<string, string> _byOrg;
     private readonly PeeringDbWebsiteResolver? _peeringDbResolver;
+    private readonly ConcurrentDictionary<string, SubstringResult> _substringCache = new(StringComparer.Ordinal);
+
+    private readonly record struct SubstringResult(string? Website);
 
     // Cache holds the full PeeringDB response; website and info_type are extracted from it.
     private readonly ConcurrentDictionary<uint, Lazy<Task<PeeringDbNetworkInfo?>>> _peeringDbCache = new();
@@ -58,20 +61,24 @@ public class HostingWebsiteResolver : IWebsiteResolver
             return site;
 
         if (!string.IsNullOrWhiteSpace(organization))
-        {
-            foreach (var kvp in ManualOverrides)
-                if (organization.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
-                    return kvp.Value;
-        }
-
-        if (!string.IsNullOrWhiteSpace(organization))
-        {
-            foreach (var kvp in _byOrg)
-                if (organization.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
-                    return kvp.Value;
-        }
+            return _substringCache.GetOrAdd(
+                organization,
+                FindBySubstring).Website;
 
         return null;
+    }
+
+    private SubstringResult FindBySubstring(string organization)
+    {
+        foreach (var pair in ManualOverrides)
+            if (organization.Contains(pair.Key, StringComparison.OrdinalIgnoreCase))
+                return new SubstringResult(pair.Value);
+
+        foreach (var pair in _byOrg)
+            if (organization.Contains(pair.Key, StringComparison.OrdinalIgnoreCase))
+                return new SubstringResult(pair.Value);
+
+        return new SubstringResult(null);
     }
 
     public Task<PeeringDbNetworkInfo?> GetNetworkInfoFromPeeringDbAsync(uint asn, CancellationToken cancellationToken = default)

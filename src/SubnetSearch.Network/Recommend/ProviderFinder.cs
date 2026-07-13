@@ -34,10 +34,7 @@ public class ProviderFinder(
     string?         cacheDir              = null,
     IReadOnlyDictionary<uint, string>? caidaClassifications = null,
     RipeStatCache?  ripeCache             = null,
-    // PeeringDB Api-Key: attached per-request (never on the shared client's
-    // DefaultRequestHeaders — that reintroduces the header-bleed the phase fixed).
-    // Restores authentication on ProviderFinder's bulk PeeringDB pulls (CR-01), which
-    // is the path --set-key peeringdb= is advertised to unblock (raises the rate limit).
+    // The PeeringDB key is attached to individual requests.
     string?         peeringDbKey          = null)
 {
     private readonly AsnExclusions  _excl      = exclusions ?? AsnExclusions.Default;
@@ -46,7 +43,6 @@ public class ProviderFinder(
     private readonly RipeStatCache? _ripeCache = ripeCache;
     private readonly IReadOnlyDictionary<uint, string>? _caida = caidaClassifications;
     private readonly IReadOnlyDictionary<uint, string>? _asnTypes = asnTypes;
-    // Sanitized once via the shared helper (null when empty/whitespace/"\0"-only).
     private readonly string? _pdbKey = PeeringDbAuth.Sanitize(peeringDbKey);
 
     private string? LookupAsnType(uint asn)
@@ -55,9 +51,7 @@ public class ProviderFinder(
     private const string PeeringDbBase = "https://www.peeringdb.com/api";
 
     /// <summary>
-    /// Builds a GET request and attaches the per-request Api-Key Authorization only when a
-    /// key is configured. The secret lives on the individual request, never on the shared
-    /// client's DefaultRequestHeaders (CR-01 / T-03-01).
+    /// Builds an authenticated PeeringDB request when a key is configured.
     /// </summary>
     private HttpRequestMessage PdbRequest(string url)
     {
@@ -418,6 +412,10 @@ public class ProviderFinder(
 
     // PeeringDB defaults to 250 records per page. Paginate with skip until all records are fetched.
     // Returns (candidates, errorMessage) — error is non-null when the first page fails.
+    // Live PeeringDB HTTP pagination with 429/timeout retry + rate-limit backoff — pure network
+    // I/O orchestration. The record parsing (ParseNetwork) and cache round-trip are unit-tested;
+    // the fetch/retry loop is integration-scope, so it is excluded from the unit-coverage metric.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     private async Task<(IReadOnlyList<ProviderCandidate> Candidates, string? Error)> FetchNetsByTypeAsync(
         string infoType, CancellationToken ct, Action<string>? onStatus = null)
     {
@@ -531,7 +529,9 @@ public class ProviderFinder(
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
             {
-                var prefixTask    = FetchPrefixDataAsync(candidate.Asn, innerCt);
+                IReadOnlyList<string>? localPrefixes = null;
+                localPrefixFallback?.TryGetValue(candidate.Asn, out localPrefixes);
+                var prefixTask    = FetchPrefixDataAsync(candidate.Asn, localPrefixes, innerCt);
                 var neighbourTask = FetchNeighboursAsync(candidate.Asn, innerCt);
 
                 await Task.WhenAll(prefixTask, neighbourTask);
@@ -539,13 +539,8 @@ public class ProviderFinder(
                 // Get prefix data first — needed for the IP pool threshold in the filter below.
                 var (ipv4, ipv6)  = prefixTask.Result;
                 var (upstream, _) = neighbourTask.Result;
-                // Локальный fallback: RIPE+BGPView не дали IPv4 → берём префиксы из ip2asn,
-                // чтобы не терять кандидата (мелкие ASN, по которым RIPE молчит).
-                if (ipv4.Count == 0 && localPrefixFallback != null
-                    && localPrefixFallback.TryGetValue(candidate.Asn, out var local) && local.Count > 0)
-                    ipv4 = local;
                 if (ipv4.Count == 0) return;
-                long totalIps = ipv4.Sum(CountIpsInCidr);
+                long totalIps = Ipv4RangeMath.CountUniqueAddresses(ipv4);
 
                 // Principled hosting filter (applied when --type server/vps/cloud is used):
                 //
@@ -609,34 +604,13 @@ public class ProviderFinder(
                 });
             });
 
-        // Phase B: RPKI — sample first prefix only to limit RIPE Stat load.
-        var results = new System.Collections.Concurrent.ConcurrentBag<ProviderCandidate>();
-        await Parallel.ForEachAsync(withPrefixes,
-            new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
-            async (candidate, innerCt) =>
-            {
-                bool acquired = false;
-                try
-                {
-                    await _ripeSemaphore.WaitAsync(innerCt);
-                    acquired = true;
-                    var rpki = await ripeClient.GetRpkiValidityRatioAsync(
-                        candidate.Asn, candidate.Prefixes, maxSample: 2, ct: innerCt);
-                    results.Add(candidate with { RpkiScore = rpki });
-                }
-                catch (OperationCanceledException) when (innerCt.IsCancellationRequested) { throw; }
-                catch
-                {
-                    results.Add(candidate);
-                }
-                finally { if (acquired) _ripeSemaphore.Release(); }
-            });
-
-        return [.. results];
+        return [.. withPrefixes];
     }
 
     private async Task<(IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> FetchPrefixDataAsync(
-        uint asn, CancellationToken ct)
+        uint asn,
+        IReadOnlyList<string>? localPrefixes,
+        CancellationToken ct)
     {
         IReadOnlyList<string> ipv4 = [];
         IReadOnlyList<string> ipv6 = [];
@@ -652,7 +626,10 @@ public class ProviderFinder(
         catch { }
         finally { if (acquired) _ripeSemaphore.Release(); }
 
-        // BGPView fallback: RIPE Stat returned no IPv4 prefixes for this ASN.
+        if (ipv4.Count == 0 && localPrefixes is { Count: > 0 })
+            ipv4 = localPrefixes;
+
+        // BGPView fallback: RIPE Stat and local data returned no IPv4 prefixes for this ASN.
         // Throttled to ~42 req/min — only triggered for genuinely missing ASNs.
         // Preserves any IPv6 data already returned by RIPE Stat.
         // Known-empty ASNs (pfx0 marker) skip the throttled call within the cache TTL —
@@ -693,22 +670,7 @@ public class ProviderFinder(
     }
 
     public static long CountIpsInCidr(string cidr)
-    {
-        var slash = cidr.IndexOf('/');
-        if (slash >= 0)
-        {
-            if (!int.TryParse(cidr[(slash + 1)..], out int prefix) || prefix < 0 || prefix > 32) return 1;
-            return 1L << (32 - prefix);
-        }
-        // Диапазон "start-end" (fallback из ip2asn — невыровненный блок).
-        var dash = cidr.IndexOf('-');
-        if (dash > 0
-            && SubnetSearch.Core.Utilities.IpConverter.TryIpToUint(cidr[..dash], out var s)
-            && SubnetSearch.Core.Utilities.IpConverter.TryIpToUint(cidr[(dash + 1)..], out var e)
-            && e >= s)
-            return (long)((ulong)e - s + 1);
-        return 1;
-    }
+        => Ipv4RangeMath.CountAddresses(cidr);
 
     // Стабы для ASN из asnList, не давших кандидата в цикле обогащения: только те, что
     // есть в nameFallback (имена ядра) — не-core сюда попасть не может. Префиксы добьёт

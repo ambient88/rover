@@ -8,12 +8,7 @@ public class GZipIntegrityChecker : IFileIntegrityChecker
     {
         try
         {
-            // Decompress the whole stream and compare the byte count against the gzip trailer's
-            // ISIZE (original size mod 2^32, little-endian in the last 4 bytes). Reading only the
-            // first byte waved through a partial download (F8); even a full read is not enough,
-            // because .NET's GZipStream returns 0 at a truncation instead of faulting. The ISIZE
-            // cross-check catches a lost/corrupt trailer. Assumes a single-member gzip (the data
-            // sources here never concatenate members).
+            // The trailer size check detects truncated single-member archives.
             long total = 0;
             using (var fs = File.OpenRead(filePath))
             using (var gz = new GZipStream(fs, CompressionMode.Decompress))
@@ -24,10 +19,10 @@ public class GZipIntegrityChecker : IFileIntegrityChecker
                     total += read;
             }
 
-            if (total == 0) return false; // empty (or header-only) — treat as invalid, as before
+            if (total == 0) return false;
 
             using var raw = File.OpenRead(filePath);
-            if (raw.Length < 18) return false; // 10-byte header + 8-byte trailer minimum
+            if (raw.Length < 18) return false;
             raw.Seek(-4, SeekOrigin.End);
             var isizeBytes = new byte[4];
             if (raw.Read(isizeBytes, 0, 4) != 4) return false;

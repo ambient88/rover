@@ -4,6 +4,8 @@ namespace SubnetSearch.Cli;
 
 public static class ArgsParser
 {
+    private static readonly string[] KnownModes = ["-a", "-d", "-c", "-l", "-o", "-r", "update"];
+
     public static string? GetArgValue(string[] args, string flag)
     {
         var idx = Array.IndexOf(args, flag);
@@ -15,11 +17,8 @@ public static class ArgsParser
     {
         if (args.Length == 0) return (true, null);
 
-        // Find the primary mode flag anywhere in args (allows flags before the mode).
-        // "update" — verb провижининга данных (rover update): не требует позиционного аргумента.
-        string[] knownModes = ["-a", "-d", "-c", "-l", "-o", "-r", "update"];
-        string mode = args.Select(a => a.ToLower())
-                          .FirstOrDefault(a => knownModes.Contains(a))
+        string mode = args.Select(a => a.ToLowerInvariant())
+                          .FirstOrDefault(a => KnownModes.Contains(a))
                       ?? args[0].ToLower();
 
         // Modes that require a positional argument
@@ -94,9 +93,12 @@ public static class ArgsParser
         }
 
         // Catch-all for unknown modes (not a flag either)
-        if (!knownModes.Contains(mode))
+        if (!KnownModes.Contains(mode))
             return (false, $"Unknown mode: '{args[0]}'");
 
         return (true, null);
     }
+
+    public static int FindModeIndex(string[] args)
+        => Array.FindIndex(args, arg => KnownModes.Contains(arg.ToLowerInvariant()));
 }

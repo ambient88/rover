@@ -4,14 +4,9 @@ using SubnetSearch.Classification;
 
 namespace SubnetSearch.Tests;
 
-// Wave 0 (RED): locks the observable per-request auth contract of PeeringDbWebsiteResolver.
-// The key travels on the individual HttpRequestMessage (Authorization: Api-Key <key>), never on
-// the shared client's DefaultRequestHeaders. Key value is CR/LF/null-stripped and trimmed to
-// prevent header injection. These tests intentionally reference the not-yet-existing 2-arg ctor
-// (HttpClient, string?) and therefore fail to compile until plan 03-01 lands the implementation.
+// Authentication belongs to each PeeringDB request, not the shared client.
 public class PeeringDbWebsiteResolverTests
 {
-    // RED driver: forces the (HttpClient, string? apiKey) ctor introduced in 03-01.
     private static PeeringDbWebsiteResolver Client(TestHttpMessageHandler h, string? key = null)
         => new(new HttpClient(h), key);
 
@@ -56,6 +51,54 @@ public class PeeringDbWebsiteResolverTests
         info.Should().NotBeNull();
         info!.Website.Should().Be("http://x");
         info.NetId.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_EmptyData_ReturnsNull()
+    {
+        var info = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"data":[]}"""))
+            .GetNetworkInfoAsync(64500);
+        info.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_HttpError_ReturnsNull()
+    {
+        var info = await Client(TestHttpMessageHandler.Always(HttpStatusCode.InternalServerError, ""))
+            .GetNetworkInfoAsync(64500);
+        info.Should().BeNull("a failed PeeringDB call degrades to no enrichment");
+    }
+
+    [Fact]
+    public async Task GetIxLocations_ParsesDedupesAndSorts()
+    {
+        const string json = """{"data":[{"name":"DE-CIX"},{"name":"AMS-IX"},{"name":"DE-CIX"}]}""";
+        var ix = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, json)).GetIxLocationsAsync(7);
+        ix.Should().Equal("AMS-IX", "DE-CIX");
+    }
+
+    [Fact]
+    public async Task GetIxLocations_EmptyData_ReturnsNull()
+    {
+        var ix = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"data":[]}"""))
+            .GetIxLocationsAsync(7);
+        ix.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task IsAvailable_Success_ReturnsAvailable()
+    {
+        var status = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"data":[{"id":1}]}"""))
+            .IsAvailableAsync();
+        status.IsAvailable.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task IsAvailable_ServerError_ReturnsUnavailable()
+    {
+        var status = await Client(TestHttpMessageHandler.Always(HttpStatusCode.BadGateway, ""))
+            .IsAvailableAsync();
+        status.IsAvailable.Should().BeFalse();
     }
 
     [Fact]

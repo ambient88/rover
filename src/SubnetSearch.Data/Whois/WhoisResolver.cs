@@ -50,14 +50,13 @@ public partial class WhoisResolver : IWhoisResolver
         { "whois.afrinic.net", ["descr", "org", "netname"] }
     };
 
-    // The external CancellationToken is intentionally not forwarded: the cached Task
-    // must remain valid after the caller is cancelled so subsequent calls can reuse it.
-    public Task<WhoisResult?> ResolveAsync(string ipAddress, CancellationToken cancellationToken = default)
+    public async Task<WhoisResult?> ResolveAsync(
+        string ipAddress, CancellationToken cancellationToken = default)
     {
         var lazy = _cache.GetOrAdd(ipAddress,
             ip => new Lazy<Task<WhoisResult?>>(() => ResolveInternalAsync(ip),
                 LazyThreadSafetyMode.ExecutionAndPublication));
-        return lazy.Value;
+        return await lazy.Value.WaitAsync(cancellationToken);
     }
 
     private async Task<WhoisResult?> ResolveInternalAsync(string ipAddress)
@@ -73,7 +72,10 @@ public partial class WhoisResolver : IWhoisResolver
 
             return ParseWhoisResponse(whoisServer, response);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return null;
+        }
         catch (Exception)
         {
             // Network errors, parse failures, or WHOIS server issues are non-fatal.

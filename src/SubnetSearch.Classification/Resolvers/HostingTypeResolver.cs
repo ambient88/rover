@@ -22,13 +22,23 @@ public class HostingTypeResolver : IHostingTypeResolver
         CancellationToken cancellationToken = default)
     {
         // Слой 1: PTR-запись — наиболее специфичный сигнал для конкретного IP.
+        string? ptr = null;
         if (IPAddress.TryParse(ipAddress, out var ip))
-        {
-            var ptr = await _dnsResolver.ReverseDnsAsync(ip, cancellationToken);
-            var fromPtr = ClassificationRules.ResolveHostingTypeFromPtr(ptr);
-            if (fromPtr.HasValue)
-                return fromPtr.Value;
-        }
+            ptr = await _dnsResolver.ReverseDnsAsync(ip, cancellationToken);
+
+        return await ResolveWithPtrAsync(ipAddress, asn, orgName, ptr, cancellationToken);
+    }
+
+    public async Task<HostingType> ResolveWithPtrAsync(
+        string ipAddress,
+        uint? asn,
+        string? orgName,
+        string? ptr,
+        CancellationToken cancellationToken = default)
+    {
+        var fromPtr = ClassificationRules.ResolveHostingTypeFromPtr(ptr);
+        if (fromPtr.HasValue)
+            return fromPtr.Value;
 
         // Слой 2: PeeringDB info_type — структурированные данные об ASN.
         if (asn.HasValue)

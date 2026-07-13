@@ -4,24 +4,35 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace SubnetSearch.Network.Http;
 
+// TLS handshake probe over a live socket (+ cert-metadata parsing that needs a real certificate)
+// — integration/manual-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 internal static class TlsProbe
 {
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
+
     public static async Task<(string? Issuer, DateTime? Expiry, IReadOnlyList<string>? Sans, string? TlsVersion)>
         ProbeAsync(string host, int port = 443, CancellationToken ct = default)
     {
         try
         {
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(ProbeTimeout);
+
             using var tcp = new TcpClient();
-            await tcp.ConnectAsync(host, port, ct);
+            await tcp.ConnectAsync(host, port, probeCts.Token);
 
             await using var ssl = new SslStream(tcp.GetStream(), false,
                 (_, _, _, _) => true);
 
             await ssl.AuthenticateAsClientAsync(
-                new SslClientAuthenticationOptions { TargetHost = host }, ct);
+                new SslClientAuthenticationOptions { TargetHost = host }, probeCts.Token);
 
-            var cert = ssl.RemoteCertificate as X509Certificate2
-                       ?? new X509Certificate2(ssl.RemoteCertificate!);
+            // Dispose the certificate handle after reading its metadata. X509Certificate2.Dispose
+            // is safe to call twice, so disposing the SslStream-owned instance here is harmless.
+            using var cert = ssl.RemoteCertificate is X509Certificate2 existing
+                ? existing
+                : new X509Certificate2(ssl.RemoteCertificate!);
 
             return (
                 ParseCn(cert.Issuer),
@@ -29,6 +40,10 @@ internal static class TlsProbe
                 ParseSans(cert),
                 ssl.SslProtocol.ToString()
             );
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

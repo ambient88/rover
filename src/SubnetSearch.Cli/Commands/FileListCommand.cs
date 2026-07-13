@@ -17,13 +17,13 @@ public sealed class FileListCommand(CliContext ctx, string filePath) : ICommand
             throw new InvalidOperationException(
                 $"File too large: {fileInfo.Length / 1024 / 1024} MB (max 50 MB). Split the file and run in batches.");
 
-        var lines = await File.ReadAllLinesAsync(filePath);
+        var lines = await File.ReadAllLinesAsync(filePath, ct);
         var items = lines.Where(l => !string.IsNullOrWhiteSpace(l)).Select(l => l.Trim()).ToList();
 
         if (items.Count == 0)
             throw new InvalidOperationException("File is empty.");
 
-        var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
+        using var batchClassifier = await ClassifierFactory.CreateBatchClassifierAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
         var ips     = new List<string>();
         var domains = new List<string>();
 
@@ -39,7 +39,7 @@ public sealed class FileListCommand(CliContext ctx, string filePath) : ICommand
                     domains.Add(item);
                     break;
                 case BatchInputKind.Ipv6Unsupported:
-                    // IPv4-only pipeline — skip IPv6 at input so one entry can't fault the batch (F18).
+                    // IPv6 is skipped because the classification pipeline supports IPv4 only.
                     skippedIpv6++;
                     AnsiConsole.MarkupLine($"[yellow]Skipped: {Markup.Escape(item)} (IPv6 is not supported)[/]");
                     break;
@@ -97,7 +97,7 @@ public sealed class FileListCommand(CliContext ctx, string filePath) : ICommand
                     Markup.Escape(r.Asn?.ToString() ?? "N/A"),
                     Markup.Escape(r.Organization ?? "N/A"),
                     Markup.Escape(r.HostingType?.ToString() ?? "N/A"),
-                    r.Website != null ? $"[link={r.Website}]{Markup.Escape(r.Website)}[/]" : "N/A"
+                    r.Website != null ? SafeMarkup.Link(r.Website) : "N/A"
                 );
             }
             AnsiConsole.Write(ipTable);

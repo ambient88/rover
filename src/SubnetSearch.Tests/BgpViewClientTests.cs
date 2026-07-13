@@ -60,6 +60,45 @@ public class BgpViewClientTests
     }
 
     [Fact]
+    public async Task GetPrefixes_RepeatedFailuresOpenCircuit()
+    {
+        var handler = TestHttpMessageHandler.Always(HttpStatusCode.TooManyRequests, "{}");
+        var client = new BgpViewClient(new HttpClient(handler), TimeSpan.FromMilliseconds(50));
+
+        await client.GetPrefixesAsync(1);
+        await client.GetPrefixesAsync(2);
+        await client.GetPrefixesAsync(3);
+
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task GetPrefixes_RequestSpecificFailuresDoNotOpenCircuit()
+    {
+        int call = 0;
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            call++;
+            return call < 3
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"data\":{\"ipv4_prefixes\":[{\"prefix\":\"1.0.0.0/8\"}]}}")
+                };
+        });
+        var client = new BgpViewClient(new HttpClient(handler), TimeSpan.Zero);
+
+        await client.GetPrefixesAsync(1);
+        await client.GetPrefixesAsync(2);
+        var result = await client.GetPrefixesAsync(3);
+
+        handler.Requests.Should().HaveCount(3);
+        result.Ok.Should().BeTrue();
+        result.IPv4.Should().Equal("1.0.0.0/8");
+    }
+
+    [Fact]
     public async Task GetPrefixes_MalformedJson_ReturnsNotOk() // краевой случай: битый ответ
     {
         var (ok, _, _) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ broken"))

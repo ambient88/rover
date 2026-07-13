@@ -3,11 +3,8 @@ using System.Text;
 namespace SubnetSearch.Core.Utilities;
 
 /// <summary>
-/// Minimal RFC 4180-style parser for a single CSV record line. Handles quoted fields, commas
-/// embedded inside quotes, and escaped quotes (""). A plain String.Split(',') mangles provider
-/// names like "ThePlanet.com Internet Services, Inc." — splitting the name and shifting every
-/// later column by one (F7). This does not support quoted fields spanning multiple physical lines,
-/// which the data sources here never use (files are read line by line).
+/// Parses one CSV record with quoted fields and escaped quotes.
+/// Multiline fields are not supported because the input sources use one record per line.
 /// </summary>
 public static class CsvLine
 {

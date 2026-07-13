@@ -9,6 +9,7 @@ public class BatchClassifier : IBatchClassifier
     private readonly IIpClassifier _ipClassifier;
     private readonly IDomainClassifier _domainClassifier;
     private readonly ICache _cache;
+    private int _disposed;
 
     // Concurrency limit: 8 simultaneous requests (WHOIS, DNS, API).
     private const int Concurrency = 8;
@@ -30,21 +31,17 @@ public class BatchClassifier : IBatchClassifier
         int hostingCount = 0;
         var results = new ClassificationResult[ips.Count];
 
-        // Bounded worker model: Parallel.ForEachAsync keeps at most `Concurrency` operations in
-        // flight and pulls items lazily from the source, so it never materializes one
-        // Task/state-machine per input up front. A large CIDR would otherwise allocate up to
-        // ~1M tasks and risk OutOfMemoryException (F4). The loop-level token stops scheduling new
-        // work on cancel; ClassifyAsync still receives CancellationToken.None so the cached Task
-        // stays valid for later batch calls (in-flight requests are cached, not wasted).
+        // A cached operation remains reusable when one caller cancels its wait.
         await Parallel.ForEachAsync(
             Enumerable.Range(0, ips.Count),
             new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = cancellationToken },
-            async (i, _) =>
+            async (i, loopCancellationToken) =>
             {
                 var ip = ips[i];
-                var result = await _cache.GetOrAdd(
+                var task = _cache.GetOrAdd(
                     $"ip:{ip}",
                     () => _ipClassifier.ClassifyAsync(ip, CancellationToken.None))!;
+                var result = await task.WaitAsync(loopCancellationToken);
 
                 // Write by index to preserve input order in the result list.
                 results[i] = result;
@@ -71,16 +68,16 @@ public class BatchClassifier : IBatchClassifier
         int hostingCount = 0;
         var results = new DomainClassificationResult[domainList.Count];
 
-        // Bounded worker model (see ClassifyIpsAsync) — no per-item Task materialization (F4).
         await Parallel.ForEachAsync(
             Enumerable.Range(0, domainList.Count),
             new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = cancellationToken },
-            async (i, _) =>
+            async (i, loopCancellationToken) =>
             {
                 var domain = domainList[i];
-                var result = await _cache.GetOrAdd(
+                var task = _cache.GetOrAdd(
                     $"domain:{domain}",
                     () => _domainClassifier.ClassifyDomainAsync(domain, CancellationToken.None))!;
+                var result = await task.WaitAsync(loopCancellationToken);
 
                 results[i] = result;
                 if (result.IpResults.Any(r => r.IsHosting)) Interlocked.Increment(ref hostingCount);
@@ -94,5 +91,19 @@ public class BatchClassifier : IBatchClassifier
             });
 
         return results;
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { _domainClassifier.Dispose(); }
+        finally
+        {
+            try { _ipClassifier.Dispose(); }
+            finally
+            {
+                if (_cache is IDisposable disposableCache) disposableCache.Dispose();
+            }
+        }
     }
 }

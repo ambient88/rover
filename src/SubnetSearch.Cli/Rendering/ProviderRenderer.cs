@@ -15,7 +15,7 @@ public static class ProviderRenderer
         if (!string.IsNullOrWhiteSpace(r.InfoType))
             AnsiConsole.MarkupLine($"  [bold]Network type:[/]  {Markup.Escape(r.InfoType)}");
         if (!string.IsNullOrWhiteSpace(r.Website))
-            AnsiConsole.MarkupLine($"  [bold]Website:[/]       [link={r.Website}]{Markup.Escape(r.Website)}[/]");
+            AnsiConsole.MarkupLine($"  [bold]Website:[/]       {SafeMarkup.Link(r.Website)}");
         if (r.PeeringCount.HasValue)
             AnsiConsole.MarkupLine($"  [bold]Peerings (IXP):[/] {r.PeeringCount.Value}");
         if (r.IxLocations is { Count: > 0 })

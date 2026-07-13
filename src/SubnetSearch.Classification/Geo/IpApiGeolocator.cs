@@ -6,6 +6,8 @@ namespace SubnetSearch.Classification;
 
 // Fallback geolocator using ip-api.com (free, no key, city-level).
 // Only called when the primary DB-IP source returns no city or coordinates.
+// Thin HTTP geolocation adapter (live ip-api.com requests) — integration-tested only.
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class IpApiGeolocator : IGeolocator
 {
     // Shared across all instances — lives for the process lifetime to avoid socket exhaustion.

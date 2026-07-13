@@ -1,5 +1,4 @@
 using Spectre.Console;
-using SubnetSearch.Classification;
 using SubnetSearch.Network.Recommend;
 using SubnetSearch.Cli;
 using SubnetSearch.Cli.Commands;
@@ -46,7 +45,7 @@ if (args.Contains("--set-key"))
         return 1;
     }
     var pair = args[idx + 1];
-    var eq   = pair.IndexOf('=');
+    var eq = pair.IndexOf('=');
     if (eq < 0)
     {
         AnsiConsole.MarkupLine("[red]Format must be: --set-key <service>=<value>[/]");
@@ -101,17 +100,18 @@ if (args.Length == 0)
     return 0;
 }
 
-// `update` — единственная задача была провижининг данных (Visible-режим уже отработал
-// в AppBootstrap). Дальше запускать нечего — выходим до PeeringDB-инициализации и роутинга.
-if (args[0].Equals("update", StringComparison.OrdinalIgnoreCase))
+// `update` had one job, provisioning data (the Visible mode already ran in
+// AppBootstrap). Nothing else to do, so exit before PeeringDB init and routing.
+int modeIndex = ArgsParser.FindModeIndex(args);
+string mode = modeIndex >= 0 ? args[modeIndex].ToLowerInvariant() : args[0].ToLowerInvariant();
+if (mode == "update")
     return 0;
 
-string mode     = args[0].ToLowerInvariant();
-string argument = args.Length > 1 ? args[1] : string.Empty;
+string argument = modeIndex >= 0 && modeIndex + 1 < args.Length
+    ? args[modeIndex + 1]
+    : string.Empty;
 
-// ================== INIT: PeeringDB check runs in parallel with main command ==================
 AnsiConsole.Write("Initializing... ");
-var peeringDbStatusTask = new PeeringDbWebsiteResolver(ctx.PeeringDbHttp, ctx.Config.PeeringDbKey).IsAvailableAsync();
 
 try
 {
@@ -150,14 +150,12 @@ try
             {
                 AnsiConsole.MarkupLine($"[red]Unknown --type value: '{Markup.Escape(typeFilter)}'[/]");
                 AnsiConsole.MarkupLine($"[yellow]Valid values:[/]  {ProviderFinder.ValidTypeValues}");
-                // Observe the background status task before disposing the shared client on early exit.
-                try { await peeringDbStatusTask; } catch { }
                 return 1;
             }
-            string? sortBy     = ArgsParser.GetArgValue(args, "--sort");
-            string? traceTo    = ArgsParser.GetArgValue(args, "--trace-to");
+            string? sortBy = ArgsParser.GetArgValue(args, "--sort");
+            string? traceTo = ArgsParser.GetArgValue(args, "--trace-to");
             string? fromSource = ArgsParser.GetArgValue(args, "--from");
-            string? preset     = ArgsParser.GetArgValue(args, "--preset");
+            string? preset = ArgsParser.GetArgValue(args, "--preset");
             // Treat argument as region only if it's not a flag (doesn't start with --)
             string? region = !string.IsNullOrWhiteSpace(argument) && !argument.StartsWith("--")
                 ? argument : null;
@@ -167,8 +165,6 @@ try
         default:
             AnsiConsole.MarkupLine($"[red]Unknown mode: {Markup.Escape(mode)}[/]");
             HelpText.ShowHelp();
-            // Observe the background status task before disposing the shared client on early exit.
-            try { await peeringDbStatusTask; } catch { }
             return 1;
     }
 }
@@ -182,13 +178,6 @@ catch (Exception ex)
     AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
     Environment.Exit(1);
 }
-
-var status = await peeringDbStatusTask;
-Console.WriteLine();
-if (status.IsAvailable)
-    AnsiConsole.MarkupLine($"[dim]PeeringDB: [green]✓ available[/] (HTTP {status.HttpStatusCode}, {status.Elapsed.TotalSeconds:F1}s)[/]");
-else
-    AnsiConsole.MarkupLine($"[dim]PeeringDB: [yellow]✗ unavailable[/] — website enrichment disabled[/]");
 
 Console.WriteLine("\nDone.");
 return 0;

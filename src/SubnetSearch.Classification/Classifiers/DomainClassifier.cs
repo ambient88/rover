@@ -8,12 +8,19 @@ public class DomainClassifier : IDomainClassifier
     private readonly IIpClassifier _ipClassifier;
     private readonly IDomainWhoisResolver _domainWhois;
     private readonly IDnsResolver _dnsResolver;
+    private readonly bool _ownsIpClassifier;
+    private int _disposed;
 
-    public DomainClassifier(IIpClassifier ipClassifier, IDomainWhoisResolver domainWhois, IDnsResolver dnsResolver)
+    public DomainClassifier(
+        IIpClassifier ipClassifier,
+        IDomainWhoisResolver domainWhois,
+        IDnsResolver dnsResolver,
+        bool ownsIpClassifier = false)
     {
         _ipClassifier = ipClassifier ?? throw new ArgumentNullException(nameof(ipClassifier));
         _domainWhois = domainWhois ?? throw new ArgumentNullException(nameof(domainWhois));
         _dnsResolver = dnsResolver ?? throw new ArgumentNullException(nameof(dnsResolver));
+        _ownsIpClassifier = ownsIpClassifier;
     }
 
     public async Task<DomainClassificationResult> ClassifyDomainAsync(string domain, CancellationToken cancellationToken = default)
@@ -21,8 +28,8 @@ public class DomainClassifier : IDomainClassifier
         var ips = await _dnsResolver.ResolveAllIpAsync(domain, cancellationToken);
         var ipAddresses = ips.Select(ip => ip.ToString()).ToList();
 
-        // Классификация IP, reverse DNS и WHOIS домена запускаются параллельно.
-        // ToList() материализует задачи один раз — без него Select() запустит ClassifyAsync повторно.
+        // IP classification, reverse DNS and domain WHOIS run in parallel.
+        // ToList() materialises the tasks once; without it Select() would re-run ClassifyAsync.
         var classifyTasks = ipAddresses.Select(ip => _ipClassifier.ClassifyAsync(ip, cancellationToken)).ToList();
         var reverseDnsTask = ips.Count > 0
             ? _dnsResolver.ReverseDnsAsync(ips[0], cancellationToken)
@@ -38,10 +45,7 @@ public class DomainClassifier : IDomainClassifier
         string? reverseDns = await reverseDnsTask;
         var domainWhois = await domainWhoisTask;
 
-        // Hosting provider is derived from the resolved IPs, never from WHOIS: the WHOIS record
-        // carries the registrar, not the host, and conflating the two mislabels a domain
-        // registered at (say) GoDaddy but hosted at Hetzner (F3). Prefer the first hosting IP's
-        // organization, otherwise fall back to the first resolved IP's organization.
+        // Domain WHOIS identifies the registrar, not the hosting provider.
         string? hostingProvider = ipResults.FirstOrDefault(r => r.IsHosting)?.Organization
                                ?? ipResults.FirstOrDefault()?.Organization;
 
@@ -87,4 +91,10 @@ public class DomainClassifier : IDomainClassifier
         ("server",      "Server service"),
         ("dedicated",   "Dedicated server service"),
     ];
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (_ownsIpClassifier) _ipClassifier.Dispose();
+    }
 }
