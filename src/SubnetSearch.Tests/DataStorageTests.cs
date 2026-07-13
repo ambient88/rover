@@ -35,18 +35,31 @@ public class DataStorageTests : IDisposable
         }
     }
 
-    private sealed class ConcurrencyChecker : IFileIntegrityChecker
+    private sealed class ConcurrencyChecker : IFileIntegrityChecker, IDisposable
     {
         private int _active;
+        private readonly CountdownEvent _arrived = new(2);
+        private readonly ManualResetEventSlim _release = new(false);
         public int MaxActive { get; private set; }
 
         public bool IsValid(string filePath)
         {
             int active = Interlocked.Increment(ref _active);
             lock (this) MaxActive = Math.Max(MaxActive, active);
-            Thread.Sleep(50);
+            _arrived.Signal();
+            _release.Wait(TimeSpan.FromSeconds(5));
             Interlocked.Decrement(ref _active);
             return true;
+        }
+
+        public bool WaitForBoth(TimeSpan timeout) => _arrived.Wait(timeout);
+
+        public void Release() => _release.Set();
+
+        public void Dispose()
+        {
+            _release.Dispose();
+            _arrived.Dispose();
         }
     }
 
@@ -182,23 +195,27 @@ public class DataStorageTests : IDisposable
     {
         File.WriteAllText(Path.Combine(_dir, "first.test"), "first");
         File.WriteAllText(Path.Combine(_dir, "second.test"), "second");
-        var checker = new ConcurrencyChecker();
+        using var checker = new ConcurrencyChecker();
         var storage = new LocalFileStorage(
             _dir,
             new Dictionary<string, IFileIntegrityChecker> { [".test"] = checker });
 
-        await Task.WhenAll(
-            Task.Factory.StartNew(
+        Task first = Task.Factory.StartNew(
                 () => storage.IsFileValid("first.test", 0),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
-                TaskScheduler.Default),
-            Task.Factory.StartNew(
+                TaskScheduler.Default);
+        Task second = Task.Factory.StartNew(
                 () => storage.IsFileValid("second.test", 0),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
-                TaskScheduler.Default));
+                TaskScheduler.Default);
 
+        bool bothArrived = checker.WaitForBoth(TimeSpan.FromSeconds(2));
+        checker.Release();
+        await Task.WhenAll(first, second);
+
+        bothArrived.Should().BeTrue();
         checker.MaxActive.Should().Be(2);
     }
 
