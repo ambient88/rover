@@ -35,10 +35,13 @@ public class RipeStatClient
     {
         try
         {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
             var r = await _http.GetFromJsonAsync<AsnOverviewResponse>(
-                $"{Base}/as-overview/data.json?resource=AS{asn}", ct);
+                $"{Base}/as-overview/data.json?resource=AS{asn}", reqCts.Token);
             return r?.Status == "ok" ? r.Data : null;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return null; }
     }
 
@@ -52,7 +55,7 @@ public class RipeStatClient
         try
         {
             using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            reqCts.CancelAfter(TimeSpan.FromSeconds(30));
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
 
             var r = await _http.GetFromJsonAsync<CountryAsnsResponse>(
                 $"{Base}/country-asns/data.json?resource={Uri.EscapeDataString(countryCode)}&lod=1",
@@ -74,19 +77,8 @@ public class RipeStatClient
 
     public async Task<IReadOnlyList<string>> GetPrefixesAsync(uint asn, CancellationToken ct = default)
     {
-        try
-        {
-            var r = await _http.GetFromJsonAsync<AnnouncedPrefixesResponse>(
-                $"{Base}/announced-prefixes/data.json?resource=AS{asn}", ct);
-            if (r?.Status != "ok" || r.Data?.Prefixes == null) return [];
-            return r.Data.Prefixes
-                .Select(p => p.Prefix)
-                .Where(p => !string.IsNullOrWhiteSpace(p) && !p.Contains(':'))  // только IPv4
-                .Select(p => p!)
-                .OrderBy(CidrToSortKey)
-                .ToList();
-        }
-        catch { return []; }
+        var (_, ipv4, _) = await GetAllPrefixesAsync(asn, ct);
+        return ipv4;
     }
 
     // Returns both IPv4 and IPv6 prefixes in one request — avoids duplicate RIPE Stat calls.
@@ -97,21 +89,15 @@ public class RipeStatClient
         uint asn, CancellationToken ct = default)
     {
         string cacheKey = $"pfx_{asn}";
-        if (_cache != null && _cache.TryGet(cacheKey, out var cached))
-        {
-            // WR-02: битая запись → cache-miss, уходим в сеть и перезаписываем её.
-            try
-            {
-                var d = JsonSerializer.Deserialize<PrefixCacheData>(cached!);
-                if (d != null) return (true, d.Ipv4, d.Ipv6);
-            }
-            catch (JsonException) { }
-        }
+        if (TryGetCachedPrefixes(asn, out var cachedIpv4, out var cachedIpv6))
+            return (true, cachedIpv4, cachedIpv6);
 
         try
         {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
             var r = await _http.GetFromJsonAsync<AnnouncedPrefixesResponse>(
-                $"{Base}/announced-prefixes/data.json?resource=AS{asn}", ct);
+                $"{Base}/announced-prefixes/data.json?resource=AS{asn}", reqCts.Token);
             if (r?.Status != "ok" || r.Data?.Prefixes == null) return (false, [], []);
             var all = r.Data.Prefixes
                 .Select(p => p.Prefix)
@@ -128,6 +114,29 @@ public class RipeStatClient
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return (false, [], []); }
+    }
+
+    public bool TryGetCachedPrefixes(
+        uint asn,
+        out IReadOnlyList<string> ipv4,
+        out IReadOnlyList<string> ipv6)
+    {
+        ipv4 = [];
+        ipv6 = [];
+        if (_cache == null || !_cache.TryGet($"pfx_{asn}", out var cached))
+            return false;
+        try
+        {
+            var data = JsonSerializer.Deserialize<PrefixCacheData>(cached!);
+            if (data == null) return false;
+            ipv4 = data.Ipv4;
+            ipv6 = data.Ipv6;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     // Persists prefixes obtained from a fallback source (BGPView) under the same pfx_{asn}
@@ -156,21 +165,15 @@ public class RipeStatClient
         uint asn, CancellationToken ct = default)
     {
         string cacheKey = $"nbr_{asn}";
-        if (_cache != null && _cache.TryGet(cacheKey, out var cached))
-        {
-            // WR-02: битая запись → cache-miss, уходим в сеть и перезаписываем её.
-            try
-            {
-                var d = JsonSerializer.Deserialize<NeighbourCacheData>(cached!);
-                if (d != null) return (d.Upstream, d.Downstream);
-            }
-            catch (JsonException) { }
-        }
+        if (TryGetCachedNeighbourCounts(asn, out var cachedCounts))
+            return cachedCounts;
 
         try
         {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
             var r = await _http.GetFromJsonAsync<NeighboursResponse>(
-                $"{Base}/asn-neighbours/data.json?resource=AS{asn}", ct);
+                $"{Base}/asn-neighbours/data.json?resource=AS{asn}", reqCts.Token);
             if (r?.Status != "ok" || r.Data?.Neighbours == null) return (0, 0);
             int up   = r.Data.Neighbours.Count(n => n.Type == "left");
             int down = r.Data.Neighbours.Count(n => n.Type == "right");
@@ -180,7 +183,26 @@ public class RipeStatClient
 
             return (up, down);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return (0, 0); }
+    }
+
+    public bool TryGetCachedNeighbourCounts(uint asn, out (int Upstream, int Downstream) counts)
+    {
+        counts = (0, 0);
+        if (_cache == null || !_cache.TryGet($"nbr_{asn}", out var cached))
+            return false;
+        try
+        {
+            var data = JsonSerializer.Deserialize<NeighbourCacheData>(cached!);
+            if (data == null) return false;
+            counts = (data.Upstream, data.Downstream);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     // ── Upstream neighbours (type = "left") ───────────────────────────────────
@@ -189,8 +211,10 @@ public class RipeStatClient
     {
         try
         {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
             var r = await _http.GetFromJsonAsync<NeighboursResponse>(
-                $"{Base}/asn-neighbours/data.json?resource=AS{asn}", ct);
+                $"{Base}/asn-neighbours/data.json?resource=AS{asn}", reqCts.Token);
             if (r?.Status != "ok" || r.Data?.Neighbours == null) return [];
             return r.Data.Neighbours
                 .Where(n => n.Type == "left")
@@ -199,6 +223,7 @@ public class RipeStatClient
                 .Take(10)
                 .ToList();
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return []; }
     }
 
@@ -224,8 +249,10 @@ public class RipeStatClient
     {
         try
         {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(2));
             var url = $"{Base}/searchcomplete/data.json?resource={Uri.EscapeDataString(query)}&limit=8";
-            var r   = await _http.GetFromJsonAsync<SearchCompleteResponse>(url, ct);
+            var r   = await _http.GetFromJsonAsync<SearchCompleteResponse>(url, reqCts.Token);
             if (r?.Status != "ok" || r.Data?.Categories == null) return [];
 
             return r.Data.Categories
@@ -245,6 +272,7 @@ public class RipeStatClient
                 .Select(x => x!)
                 .ToList();
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return []; }
     }
 

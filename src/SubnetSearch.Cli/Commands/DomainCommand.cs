@@ -1,4 +1,5 @@
 using SubnetSearch.Classification;
+using SubnetSearch.Core.Models.Classification;
 using SubnetSearch.Network.Http;
 using SubnetSearch.Cli.Rendering;
 
@@ -11,10 +12,30 @@ public sealed class DomainCommand(CliContext ctx, string domain) : ICommand
         if (string.IsNullOrWhiteSpace(domain))
             throw new ArgumentException("Provide a domain name.");
         using var domainClassifier = await ClassifierFactory.CreateDomainClassifierAsync(ctx.DataDir, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
-        var classifyTask     = domainClassifier.ClassifyDomainAsync(domain, ct);
-        var httpTask         = new HttpFingerprintService().FingerprintAsync(domain, ct);
-        await Task.WhenAll(classifyTask, httpTask);
-        DomainRenderer.PrintDomainResult(classifyTask.Result with { Http = httpTask.Result });
+        using var commandBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        commandBudget.CancelAfter(TimeSpan.FromSeconds(8));
+        var classifyTask = domainClassifier.ClassifyDomainAsync(domain, commandBudget.Token);
+        var httpTask = new HttpFingerprintService().FingerprintAsync(domain, commandBudget.Token);
+        try
+        {
+            await Task.WhenAll(classifyTask, httpTask);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        var result = classifyTask.IsCompletedSuccessfully
+            ? classifyTask.Result
+            : new DomainClassificationResult(
+                domain, [], null, null, [], null, null, null, [], null);
+        DomainRenderer.PrintDomainResult(result with
+        {
+            Http = httpTask.IsCompletedSuccessfully ? httpTask.Result : null
+        });
         return 0;
     }
 }

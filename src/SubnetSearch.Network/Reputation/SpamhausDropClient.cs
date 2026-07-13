@@ -7,7 +7,7 @@ public class SpamhausDropClient
 {
     private const string Url = "https://www.spamhaus.org/drop/asndrop.txt";
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
-    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(2);
 
     private readonly HttpClient _http;
     private readonly string _cachePath;
@@ -65,6 +65,7 @@ public class SpamhausDropClient
         catch
         {
             _listedAsns ??= [];
+            _loadedAt = DateTimeOffset.UtcNow;
         }
         finally
         {

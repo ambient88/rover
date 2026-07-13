@@ -36,13 +36,8 @@ public static class ClassifierFactory
         var peeringDbResolver = new PeeringDbWebsiteResolver(peeringDbHttp, peeringDbKey);
         var websiteResolver   = new HostingWebsiteResolver(byAsn, byOrg, peeringDbResolver);
 
-        // Enrich hostingAsns with ASNs derived from hosting IP ranges.
-        foreach (var range in hostingRangeIndex.Ranges)
-        {
-            var rec = ipIndex.Find(range.StartIp);
-            if (rec.HasValue && rec.Value.Asn > 0)
-                hostingAsns.Add(rec.Value.Asn);
-        }
+        hostingAsns.UnionWith(DerivedHostingAsnCache.LoadOrBuild(
+            dataDir, hostingRangeIndex.Ranges, ipIndex));
 
         IWhoisResolver whoisResolver = new WhoisResolver();
         IDnsResolver dnsResolver = new DnsResolver();

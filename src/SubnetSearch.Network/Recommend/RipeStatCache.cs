@@ -15,10 +15,6 @@ public class RipeStatCache
     private readonly ConcurrentDictionary<string, CacheEntry> _store = new();
     private int _dirty; // 0 = clean, 1 = dirty; accessed via Interlocked
 
-    // rpki_ entries now live at most RpkiAuthoritativeTtl (7 days); anything with a far larger
-    // remaining TTL is a legacy 10-year record to be dropped on load (F6).
-    private const int RpkiLegacyTtlCutoffDays = 30;
-
     private record CacheEntry(
         [property: JsonPropertyName("e")] DateTime ExpiresAt,
         [property: JsonPropertyName("d")] string   Data);
@@ -47,15 +43,9 @@ public class RipeStatCache
             var stored = await JsonSerializer.DeserializeAsync<Dictionary<string, CacheEntry>>(stream);
             if (stored == null) return;
             var now = DateTime.UtcNow;
-            // F6: legacy rpki_ entries were persisted with a 10-year TTL. Drop those on load so the
-            // reduced authoritative TTL actually takes effect. Fresh entries (short TTL) are kept,
-            // so this migrates the stale data without forcing a re-fetch of recent results.
-            var legacyRpkiCutoff = now.AddDays(RpkiLegacyTtlCutoffDays);
             foreach (var (k, v) in stored)
             {
                 if (v.ExpiresAt <= now) continue;
-                if (k.StartsWith("rpki_", StringComparison.Ordinal) && v.ExpiresAt > legacyRpkiCutoff)
-                    continue;
                 _store.TryAdd(k, v);
             }
         }

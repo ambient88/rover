@@ -22,30 +22,57 @@ public class ProviderScanner : IProviderScanner
 
     public async Task<ProviderScanResult?> ScanAsync(string query, CancellationToken cancellationToken = default)
     {
-        var (asn, candidates) = await ResolveAsnAsync(query, cancellationToken);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(7));
+        var budgetToken = budget.Token;
+
+        (uint asn, IReadOnlyList<RipeStatClient.SearchResult> candidates) resolved;
+        try
+        {
+            resolved = await ResolveAsnAsync(query, budgetToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        var (asn, candidates) = resolved;
         if (asn == 0) return null;
 
-        var overviewTask  = _ripeStat.GetAsnOverviewAsync(asn, cancellationToken);
-        var prefixTask    = _ripeStat.GetPrefixesAsync(asn, cancellationToken);
-        var upstreamTask  = _ripeStat.GetUpstreamAsnsAsync(asn, cancellationToken);
-        var pdbTask       = _websiteResolver.GetNetworkInfoFromPeeringDbAsync(asn, cancellationToken);
+        var overviewTask  = _ripeStat.GetAsnOverviewAsync(asn, budgetToken);
+        var prefixTask    = _ripeStat.GetPrefixesAsync(asn, budgetToken);
+        var upstreamTask  = _ripeStat.GetUpstreamAsnsAsync(asn, budgetToken);
+        var pdbTask       = _websiteResolver.GetNetworkInfoFromPeeringDbAsync(asn, budgetToken);
 
-        await Task.WhenAll(overviewTask, prefixTask, upstreamTask, pdbTask);
+        try
+        {
+            await Task.WhenAll(overviewTask, prefixTask, upstreamTask, pdbTask);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
 
-        var overview       = overviewTask.Result;
-        var prefixStrings  = prefixTask.Result;
-        var upstreamAsns   = upstreamTask.Result;
-        var pdbInfo        = pdbTask.Result;
+        var overview       = overviewTask.IsCompletedSuccessfully ? overviewTask.Result : null;
+        var prefixStrings  = prefixTask.IsCompletedSuccessfully ? prefixTask.Result : [];
+        var upstreamAsns   = upstreamTask.IsCompletedSuccessfully ? upstreamTask.Result : [];
+        var pdbInfo        = pdbTask.IsCompletedSuccessfully ? pdbTask.Result : null;
 
-        var upstreamNamesTask = _ripeStat.GetUpstreamsAsync(upstreamAsns, cancellationToken);
+        var upstreamNamesTask = _ripeStat.GetUpstreamsAsync(upstreamAsns, budgetToken);
         var ixTask = pdbInfo?.NetId.HasValue == true
-            ? _websiteResolver.GetIxLocationsAsync(asn, cancellationToken)
+            ? _websiteResolver.GetIxLocationsAsync(asn, budgetToken)
             : Task.FromResult<IReadOnlyList<string>?>(null);
 
-        await Task.WhenAll(upstreamNamesTask, ixTask);
+        try
+        {
+            await Task.WhenAll(upstreamNamesTask, ixTask);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
 
-        var upstreams   = (IReadOnlyList<ProviderUpstream>)upstreamNamesTask.Result;
-        var ixLocations = ixTask.Result;
+        var upstreams = upstreamNamesTask.IsCompletedSuccessfully
+            ? (IReadOnlyList<ProviderUpstream>)upstreamNamesTask.Result
+            : [];
+        var ixLocations = ixTask.IsCompletedSuccessfully ? ixTask.Result : null;
 
         var prefixes = prefixStrings
             .Select(p => EnrichPrefix(p))

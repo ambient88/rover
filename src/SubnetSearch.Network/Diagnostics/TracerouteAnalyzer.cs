@@ -32,7 +32,7 @@ public static class TracerouteAnalyzer
             .ToList();
 
         using var ptrCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        ptrCts.CancelAfter(TimeSpan.FromSeconds(5));
+        ptrCts.CancelAfter(TimeSpan.FromSeconds(2));
 
         var ptrMap = new System.Collections.Concurrent.ConcurrentDictionary<string, string?>();
         try

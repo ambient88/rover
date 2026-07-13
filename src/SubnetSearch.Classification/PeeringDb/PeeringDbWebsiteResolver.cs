@@ -82,15 +82,7 @@ public class PeeringDbWebsiteResolver
     {
         try
         {
-            var url = $"https://www.peeringdb.com/api/net?asn={asn}";
-            using var req = BuildRequest(url);
-            using var resp = await _httpClient.SendAsync(req, cancellationToken);
-            var response = await resp.Content.ReadFromJsonAsync<PeeringDbResponse>(cancellationToken);
-            if (response?.Data is { Length: > 0 })
-            {
-                var net = response.Data[0];
-                return new PeeringDbNetworkInfo(net.Website, net.InfoType, net.IxCount, net.Id);
-            }
+            return await GetNetworkInfoForEnrichmentAsync(asn, cancellationToken);
         }
         // Optional enrichment ignores network and JSON failures.
         catch (OperationCanceledException) { throw; }
@@ -99,27 +91,51 @@ public class PeeringDbWebsiteResolver
         return null;
     }
 
+    internal async Task<PeeringDbNetworkInfo?> GetNetworkInfoForEnrichmentAsync(
+        uint asn,
+        CancellationToken cancellationToken)
+    {
+        var url = $"https://www.peeringdb.com/api/net?asn={asn}";
+        using var req = BuildRequest(url);
+        using var resp = await _httpClient.SendAsync(req, cancellationToken);
+        resp.EnsureSuccessStatusCode();
+        var response = await resp.Content.ReadFromJsonAsync<PeeringDbResponse>(cancellationToken);
+        if (response?.Data is not { Length: > 0 })
+            return null;
+        var net = response.Data[0];
+        return new PeeringDbNetworkInfo(net.Website, net.InfoType, net.IxCount, net.Id);
+    }
+
     public async Task<IReadOnlyList<string>?> GetIxLocationsAsync(int netId, CancellationToken cancellationToken = default)
     {
         try
         {
-            var url = $"https://www.peeringdb.com/api/netixlan?net_id={netId}&status=ok";
-            using var req = BuildRequest(url);
-            using var resp = await _httpClient.SendAsync(req, cancellationToken);
-            var response = await resp.Content.ReadFromJsonAsync<IxlanResponse>(cancellationToken);
-            if (response?.Data is { Length: > 0 })
-                return response.Data
-                    .Select(x => x.Name)
-                    .Where(n => !string.IsNullOrWhiteSpace(n))
-                    .Distinct()
-                    .OrderBy(n => n)
-                    .ToList()!;
+            return await GetIxLocationsForEnrichmentAsync(netId, cancellationToken);
         }
         // Optional enrichment ignores network and JSON failures.
         catch (OperationCanceledException) { throw; }
         catch (HttpRequestException) { }
         catch (System.Text.Json.JsonException) { }
         return null;
+    }
+
+    internal async Task<IReadOnlyList<string>?> GetIxLocationsForEnrichmentAsync(
+        int netId,
+        CancellationToken cancellationToken)
+    {
+        var url = $"https://www.peeringdb.com/api/netixlan?net_id={netId}&status=ok";
+        using var req = BuildRequest(url);
+        using var resp = await _httpClient.SendAsync(req, cancellationToken);
+        resp.EnsureSuccessStatusCode();
+        var response = await resp.Content.ReadFromJsonAsync<IxlanResponse>(cancellationToken);
+        if (response?.Data is not { Length: > 0 })
+            return null;
+        return response.Data
+            .Select(x => x.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct()
+            .OrderBy(name => name)
+            .ToList()!;
     }
 
     private record PeeringDbResponse(

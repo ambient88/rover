@@ -27,6 +27,31 @@ public class IpListAnalyzerTests
         }
     }
 
+    private sealed class DelayedContent(string text, TimeSpan delay) : HttpContent
+    {
+        protected override bool TryComputeLength(out long length)
+        {
+            length = -1;
+            return false;
+        }
+
+        protected override Task SerializeToStreamAsync(
+            Stream stream,
+            TransportContext? context)
+            => SerializeToStreamAsync(stream, context, CancellationToken.None);
+
+        protected override async Task SerializeToStreamAsync(
+            Stream stream,
+            TransportContext? context,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(delay, cancellationToken);
+            await using var writer = new StreamWriter(stream, leaveOpen: true);
+            await writer.WriteAsync(text.AsMemory(), cancellationToken);
+            await writer.FlushAsync(cancellationToken);
+        }
+    }
+
     // Стаб-обработчик: отдаёт заготовленный ответ либо бросает сетевую ошибку.
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
         : HttpMessageHandler
@@ -188,6 +213,21 @@ public class IpListAnalyzerTests
             "https://example.com/list.txt", client);
 
         result.Length.Should().Be(body.Length);
+    }
+
+    [Fact]
+    public async Task ReadSourceAsync_HeaderTimeoutDoesNotCancelSlowResponseBody()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new DelayedContent("1.2.3.4", TimeSpan.FromMilliseconds(3100))
+        });
+        using var client = new HttpClient(handler);
+
+        string result = await IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", client);
+
+        result.Should().Be("1.2.3.4");
     }
 
     [Fact]

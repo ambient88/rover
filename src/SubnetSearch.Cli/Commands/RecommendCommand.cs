@@ -12,6 +12,8 @@ public sealed class RecommendCommand(
     string? countryFilter, int returnTop, string? typeFilter,
     string? sortBy, string? traceTo, string? fromSource, string? preset) : ICommand
 {
+    private static readonly TimeSpan ExecutionBudget = TimeSpan.FromSeconds(9);
+
     public async Task<int> ExecuteAsync(CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(traceTo) &&
@@ -35,6 +37,7 @@ public sealed class RecommendCommand(
 
     private async Task<int> ExecuteWithCacheAsync(RipeStatCache ripeCache, CancellationToken ct)
     {
+        var executionClock = System.Diagnostics.Stopwatch.StartNew();
         // Original HandleRecommend parameters map to CliContext + parsed args.
         // Aliased to locals so the transferred body stays verbatim and the Spectre
         // Status lambda parameter `ctx` (which shadows the primary-ctor CliContext)
@@ -77,6 +80,7 @@ public sealed class RecommendCommand(
         var abuseIpDb  = config.AbuseIpDbKey != null ? new AbuseIpDbClient(peeringDbHttp, config.AbuseIpDbKey) : null;
         var greyNoise  = config.GreyNoiseKey  != null ? new GreyNoiseClient(peeringDbHttp, config.GreyNoiseKey)  : null;
 
+        var spamhausTask = spamhaus.LoadAsync(ct);
         var ipsumTask = new IpsumLoader().LoadAsync(Path.Combine(dataDir, "ipsum.txt"));
         var exclusionsTask = AsnExclusions.LoadAsync(Path.Combine(dataDir, "asn-exclusions.json"));
         var ip2asnTask = new Ip2AsnLoader().LoadAsync(Path.Combine(dataDir, "ip2asn-v4.tsv.gz"));
@@ -96,7 +100,8 @@ public sealed class RecommendCommand(
             caidaTask,
             asJsonTask,
             bgpToolsTask,
-            serverProvidersTask);
+            serverProvidersTask,
+            spamhausTask);
 
         var ipsum = new IpsumReputationChecker(await ipsumTask);
         var exclusions = await exclusionsTask;
@@ -117,7 +122,7 @@ public sealed class RecommendCommand(
         var serverProviders = await serverProvidersTask;
 
         var bgpView    = new BgpViewClient(peeringDbHttp);
-        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache, peeringDbKey: config.PeeringDbKey);
+        var finder     = new ProviderFinder(peeringDbHttp, ripeClient, asnTypes, exclusions, bgpView, dataDir, caidaData, ripeCache, peeringDbKey: config.PeeringDbKey, localIp2AsnRecords: ip2asnRecords);
         var pingSvc    = new PingService();
         var scorer     = new ProviderScorer(
             spamhaus, ipapiIs, ipsum, pingSvc, abuseIpDb, greyNoise, ripeCache, ripeClient);
@@ -130,6 +135,7 @@ public sealed class RecommendCommand(
         Dictionary<string, int>? diagnosticPerType = null;
         IReadOnlyList<string> diagnosticErrors = [];
         int diagnosticPreEnrich = 0;
+        bool pingVerificationConstrained = false;
 
         int totalListIps = 0;
         Dictionary<uint, int>? coverageMap = null;
@@ -162,6 +168,10 @@ public sealed class RecommendCommand(
                     AnsiConsole.MarkupLine(
                         $"[dim]--from: {ips.Count} IPs → {fromAsnList.Count} ASNs (coverage map ready)[/]");
                 }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -228,7 +238,8 @@ public sealed class RecommendCommand(
                         candidates = await finder.FindByAsnListAsync(
                             coreList, infoTypes: null, excludeCdn: false, excludeAi: false,
                             localHostingWhitelist: coreKeep,
-                            localPrefixFallback: coreFallback, nameFallback: coreNames, ct: ct);
+                            localPrefixFallback: coreFallback, nameFallback: coreNames,
+                            aiOnly: false, ct: ct);
                     }
                     diagnosticAfterRipe = candidates.Count;
                 }
@@ -259,7 +270,8 @@ public sealed class RecommendCommand(
                         candidates = await finder.FindByAsnListAsync(
                             fromCore, infoTypes: null, excludeCdn: false, excludeAi: false,
                             localHostingWhitelist: fromKeep,
-                            localPrefixFallback: fromFallback, nameFallback: fromNames, ct: ct);
+                            localPrefixFallback: fromFallback, nameFallback: fromNames,
+                            aiOnly: false, ct: ct);
                     }
                     diagnosticAfterRipe = candidates.Count;
                 }
@@ -292,7 +304,8 @@ public sealed class RecommendCommand(
                         {
                             var extra = await finder.FindByAsnListAsync(supplement,
                                 infoTypes: null, excludeCdn: false, excludeAi: needsAiExclusion,
-                                localHostingWhitelist: new HashSet<uint>(supplement.Select(a => a.Asn)), ct: ct);
+                                localHostingWhitelist: new HashSet<uint>(supplement.Select(a => a.Asn)),
+                                aiOnly: aiOnly, ct: ct);
                             candidates = [.. candidates.Concat(extra).DistinctBy(c => c.Asn)];
                         }
                     }
@@ -324,7 +337,7 @@ public sealed class RecommendCommand(
                         var forced = await finder.FindByAsnListAsync(
                             missing, infoTypes: infoTypes, excludeCdn: needsHostingFilter,
                             excludeAi: needsAiExclusion,
-                            localHostingWhitelist: null, ct: ct);
+                            localHostingWhitelist: null, aiOnly: aiOnly, ct: ct);
                         candidates = [.. candidates.Concat(forced).DistinctBy(c => c.Asn)];
                     }
                 }
@@ -356,31 +369,59 @@ public sealed class RecommendCommand(
                 // RIPE Stat country-ASN supplement: recover hosting providers registered in the
                 // target countries that PeeringDB's top-N bulk query did not include.
                 // Only runs when --country is specified and the search is global (not region-based).
-                if (countryCodes is { Length: > 0 } && isGlobal && !useCoreFirst)
+                var countrySupplementReserve = maxPingMs.HasValue
+                    ? TimeSpan.FromSeconds(5)
+                    : TimeSpan.FromSeconds(2.25);
+                if (countryCodes is { Length: > 0 } && isGlobal && !useCoreFirst
+                    && RemainingExecutionTime(executionClock) > countrySupplementReserve)
                 {
                     var foundAsns           = new HashSet<uint>(candidates.Select(c => c.Asn));
                     var updatedCacheEntries = new Dictionary<string, IReadOnlyList<uint>>();
                     var cacheData           = await indexCache.LoadAsync();
                     var supplementPairs     = new List<(uint Asn, int Count)>();
 
+                    var countryResults = new Dictionary<string, IReadOnlyList<uint>>(
+                        StringComparer.OrdinalIgnoreCase);
+                    var missingCountries = new List<string>();
                     foreach (var cc in countryCodes)
                     {
-                        IReadOnlyList<uint> countryAsns;
                         if (cacheData != null && cacheData.TryGetValue(cc, out var hit))
-                        {
-                            countryAsns = hit;
-                        }
+                            countryResults[cc] = hit;
                         else
-                        {
-                            ctx.Status($"Fetching ASN registry for {cc} from RIPE Stat...");
-                            countryAsns = await ripeClient.GetCountryAsnsAsync(cc, ct);
-                            // WR-05: пустой список неотличим от таймаута/сбоя RIPE Stat —
-                            // не кэшируем пустоту на 7 дней; подлинно пустая страна
-                            // перезапросится в следующем прогоне (это дёшево).
-                            if (countryAsns.Count > 0)
-                                updatedCacheEntries[cc] = countryAsns;
-                        }
+                            missingCountries.Add(cc);
+                    }
 
+                    if (missingCountries.Count > 0)
+                    {
+                        ctx.Status($"Fetching ASN registries for {missingCountries.Count} countries from RIPE Stat...");
+                        using var countryBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        countryBudget.CancelAfter(TimeSpan.FromSeconds(2));
+                        var fetched = await Task.WhenAll(missingCountries.Select(async cc =>
+                        {
+                            try
+                            {
+                                return (Country: cc,
+                                    Asns: await ripeClient.GetCountryAsnsAsync(cc, countryBudget.Token));
+                            }
+                            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                return (Country: cc, Asns: (IReadOnlyList<uint>)[]);
+                            }
+                        }));
+                        foreach (var item in fetched)
+                        {
+                            countryResults[item.Country] = item.Asns;
+                            if (item.Asns.Count > 0)
+                                updatedCacheEntries[item.Country] = item.Asns;
+                        }
+                    }
+
+                    foreach (var countryAsns in countryResults.Values)
+                    {
                         supplementPairs.AddRange(
                             countryAsns
                                 .Where(a => !foundAsns.Contains(a) && !exclusions.NonHostingAsns.Contains(a))
@@ -423,7 +464,8 @@ public sealed class RecommendCommand(
                             var extra = await finder.FindByAsnListAsync(
                                 filteredPairs, infoTypes: infoTypes, excludeCdn: needsHostingFilter,
                                 excludeAi: needsAiExclusion,
-                                localHostingWhitelist: localWhitelist2, ct: ct);
+                                localHostingWhitelist: localWhitelist2,
+                                aiOnly: aiOnly, ct: ct);
 
                             extra = [.. extra.Select(c =>
                                 c.Country == null && asnToCountry.TryGetValue(c.Asn, out var countryTag)
@@ -467,7 +509,7 @@ public sealed class RecommendCommand(
                 }
 
                 ctx.Status($"Scoring {diagnosticCandidates} candidates (reputation + ping)...");
-                int pingTopN = Math.Max(returnTop * 4, 80);
+                int pingTopN = Math.Max(returnTop * 2, 24);
                 var weights  = ScoringWeights.FromName(preset);
 
                 // When --from is active: pin top-coverage providers so they survive the
@@ -489,9 +531,13 @@ public sealed class RecommendCommand(
                 // WR-06: в режиме --from пользователь явно перечислил провайдеров своим
                 // списком IP — жёсткий фильтр abuser_score > 0.75 отключается, как и
                 // задокументировано у хард-фильтра в ProviderScorer.
+                var scoringNetworkBudget = RemainingExecutionTime(executionClock);
+                pingVerificationConstrained = maxPingMs.HasValue
+                    && scoringNetworkBudget < TimeSpan.FromSeconds(4);
                 results = await scorer.ScoreAsync(candidates, maxPingMs, returnTop, pingTopN,
                     strictAbuseFilter: coverageMap == null,
-                    weights: weights, pinnedAsns: pinnedAsns, ct: ct);
+                    weights: weights, pinnedAsns: pinnedAsns,
+                    networkBudget: scoringNetworkBudget, ct: ct);
             });
 
         int diagnosticAfterScoring = results.Count;
@@ -530,12 +576,10 @@ public sealed class RecommendCommand(
                 else if (isTimeout)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB requests timed out — check your network connection or try again later.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (hasErrors)
                 {
                     AnsiConsole.MarkupLine("[yellow]PeeringDB fetch failed — see errors above.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (diagnosticPreEnrich == 0 && diagnosticPerType != null)
                 {
@@ -545,7 +589,6 @@ public sealed class RecommendCommand(
                         AnsiConsole.MarkupLine($"[dim]  --type {Markup.Escape(typeFilter)} → {Markup.Escape(string.Join(", ", infoTypes ?? []))}[/]");
                     if (countryDisplay != null)
                         AnsiConsole.MarkupLine($"[dim]  --country {Markup.Escape(countryDisplay)} — try a different country code or remove the filter.[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
                 }
                 else if (diagnosticPreEnrich > 0)
                 {
@@ -556,15 +599,22 @@ public sealed class RecommendCommand(
                 }
                 else
                 {
-                    // No diagnostics available — unexpected state, do a live check
-                    AnsiConsole.MarkupLine("[yellow]No hosting networks found. Running connectivity check...[/]");
-                    await CheckPeeringDbConnectivityAsync(peeringDbHttp, config.PeeringDbKey, ct);
+                    AnsiConsole.MarkupLine("[yellow]No hosting networks found.[/]");
                 }
             }
             else if (maxPingMs.HasValue)
             {
-                AnsiConsole.MarkupLine($"[yellow]All {diagnosticCandidates} candidates exceeded --max-ping {maxPingMs} ms or were unreachable.[/]");
-                AnsiConsole.MarkupLine("[dim]Try increasing --max-ping or removing it entirely.[/]");
+                if (pingVerificationConstrained)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]No provider could be confirmed below --max-ping {maxPingMs} ms within the interactive budget.[/]");
+                    AnsiConsole.MarkupLine("[dim]Try again, increase --max-ping, or remove it.[/]");
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine($"[yellow]All {diagnosticCandidates} candidates exceeded --max-ping {maxPingMs} ms or were unreachable.[/]");
+                    AnsiConsole.MarkupLine("[dim]Try increasing --max-ping or removing it entirely.[/]");
+                }
             }
             else
             {
@@ -588,9 +638,17 @@ public sealed class RecommendCommand(
         if (!string.IsNullOrWhiteSpace(traceTo))
         {
             AnsiConsole.MarkupLine($"[dim]Tracing route to {Markup.Escape(traceTo)}...[/]");
+            using var traceBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var remaining = RemainingExecutionTime(executionClock);
+            if (remaining <= TimeSpan.Zero)
+                traceBudget.Cancel();
+            else
+                traceBudget.CancelAfter(remaining < TimeSpan.FromSeconds(2)
+                    ? remaining
+                    : TimeSpan.FromSeconds(2));
             try
             {
-                var hops     = await new TracerouteService().TraceAsync(traceTo, ct);
+                var hops     = await new TracerouteService().TraceAsync(traceTo, traceBudget.Token);
                 var routeAsns = new HashSet<uint>();
                 foreach (var hop in hops)
                 {
@@ -607,6 +665,10 @@ public sealed class RecommendCommand(
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException)
+            {
+                AnsiConsole.MarkupLine("[dim]Traceroute did not finish within the interactive budget.[/]");
             }
             catch (Exception ex)
             {
@@ -646,6 +708,12 @@ public sealed class RecommendCommand(
     }
 
     // ================== HELPERS ==================
+    private static TimeSpan RemainingExecutionTime(System.Diagnostics.Stopwatch clock)
+    {
+        var remaining = ExecutionBudget - clock.Elapsed;
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
     // asn → список CIDR/диапазонов из ip2asn (fallback префиксов, когда RIPE/BGPView молчат).
     // Строится только для нужного набора ASN — один проход по ip2asnRecords.
     private static Dictionary<uint, IReadOnlyList<string>> BuildIp2AsnPrefixes(
@@ -669,47 +737,4 @@ public sealed class RecommendCommand(
         SubnetSearch.Core.Interfaces.Classification.IIpRangeIndex ipIndex)
         => await new LocalHostingAsnCache(dataDir).GetAsync(ipIndex);
 
-    private static async Task CheckPeeringDbConnectivityAsync(HttpClient http, string? apiKey, CancellationToken ct)
-    {
-        try
-        {
-            // The diagnostic request has its own short timeout.
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
-            // Authentication is attached only to this PeeringDB request.
-            using var req = new HttpRequestMessage(HttpMethod.Get,
-                "https://www.peeringdb.com/api/net?limit=1&status=ok");
-            var sanitizedKey = PeeringDbAuth.Sanitize(apiKey);
-            if (sanitizedKey != null)
-                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                    "Api-Key", sanitizedKey);
-            using var resp = await http.SendAsync(req, cts.Token);
-            int code = (int)resp.StatusCode;
-            if (resp.IsSuccessStatusCode)
-                AnsiConsole.MarkupLine($"[dim]PeeringDB connectivity: [green]OK[/] (HTTP {code})[/]");
-            else if (code == 429)
-            {
-                AnsiConsole.MarkupLine($"[yellow]PeeringDB: HTTP 429 — rate limit active.[/]");
-                AnsiConsole.MarkupLine("  rover --set-key peeringdb=YOUR_KEY  [dim](register free at peeringdb.com)[/]");
-            }
-            else
-                AnsiConsole.MarkupLine($"[yellow]PeeringDB returned HTTP {code}.[/]");
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // Отмена пользователя — не таймаут; пробрасываем (flush кэша выполнится
-            // в finally ExecuteAsync).
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            AnsiConsole.MarkupLine("[red]PeeringDB: connection timed out (>10s).[/]");
-            AnsiConsole.MarkupLine("[dim]Check your internet connection or configure a proxy: rover -r --proxy http://...[/]");
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]PeeringDB unreachable: {Markup.Escape(ex.Message)}[/]");
-            AnsiConsole.MarkupLine("[dim]Check your internet connection or configure a proxy: rover -r --proxy http://...[/]");
-        }
-    }
 }

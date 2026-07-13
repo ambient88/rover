@@ -102,6 +102,19 @@ public class ScoringPresetsTests
         missingRpki.Should().BeGreaterThan(zeroRpki);
     }
 
+    [Fact]
+    public void ComputeScore_MissingPeeringCount_RedistributesWeight_NoPenalty()
+    {
+        double missingPeering = ProviderScorer.ComputeScore(
+            10, null, null, 1000, 0.0, 0.0, null, null, 1.0,
+            totalIpCount: 1_000_000).Score;
+        double zeroPeering = ProviderScorer.ComputeScore(
+            10, null, 0, 1000, 0.0, 0.0, null, null, 1.0,
+            totalIpCount: 1_000_000).Score;
+
+        missingPeering.Should().BeGreaterThan(zeroPeering);
+    }
+
     // ── Репутация объединяется из всех доступных источников ──
 
     [Fact]

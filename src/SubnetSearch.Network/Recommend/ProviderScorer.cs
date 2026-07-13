@@ -43,6 +43,8 @@ public class ProviderScorer(
     RipeStatCache?       ripeCache = null,
     RipeStatClient?      ripeStat = null)
 {
+    private readonly SemaphoreSlim _pingThrottle = new(16, 16);
+
     private sealed class Phase1Candidate(
         ProviderCandidate candidate,
         double ipsumRatio,
@@ -66,9 +68,26 @@ public class ProviderScorer(
         bool strictAbuseFilter = true,
         ScoringWeights? weights = null,
         IReadOnlySet<uint>? pinnedAsns = null,
+        TimeSpan? networkBudget = null,
         CancellationToken ct = default)
     {
-        await spamhaus.LoadAsync(ct);
+        var networkClock = System.Diagnostics.Stopwatch.StartNew();
+        using (var spamhausBudget = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            var spamhausTime = RemainingNetworkTime(
+                networkBudget, networkClock, TimeSpan.FromSeconds(2));
+            if (spamhausTime > TimeSpan.Zero)
+                spamhausBudget.CancelAfter(spamhausTime);
+            else
+                spamhausBudget.Cancel();
+            try
+            {
+                await spamhaus.LoadAsync(spamhausBudget.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+            }
+        }
 
         var phase1Candidates = new System.Collections.Concurrent.ConcurrentBag<Phase1Candidate>();
 
@@ -95,8 +114,22 @@ public class ProviderScorer(
 
         var prepared = phase1Candidates.ToList();
         if (ripeStat != null)
-            await ResolveRpkiShortlistAsync(
-                prepared, pingTopN, pinnedAsns, weights, ripeStat, ct);
+        {
+            using var rpkiBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var rpkiTime = RemainingNetworkTime(networkBudget, networkClock, TimeSpan.FromSeconds(1));
+            if (rpkiTime > TimeSpan.Zero)
+                rpkiBudget.CancelAfter(rpkiTime);
+            else
+                rpkiBudget.Cancel();
+            try
+            {
+                await ResolveRpkiShortlistAsync(
+                    prepared, pingTopN, pinnedAsns, weights, ripeStat, rpkiBudget.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+            }
+        }
 
         var phase1 = prepared.Select(entry =>
         {
@@ -121,11 +154,23 @@ public class ProviderScorer(
             topCandidates = orderedPhase1.Take(pingTopN).ToList();
         }
 
-        var results = new System.Collections.Concurrent.ConcurrentBag<ProviderRecommendation>();
+        var liveAbuseAsns = new HashSet<uint>(topCandidates
+            .Take(Math.Min(topCandidates.Count, Math.Max(returnTop, 10)))
+            .Select(entry => entry.c.Asn));
 
-        // DoP 40: почти всё время кандидата — ожидание ICMP-таймаутов, не CPU.
-        await Parallel.ForEachAsync(topCandidates,
-            new ParallelOptions { MaxDegreeOfParallelism = 40, CancellationToken = ct },
+        var results = new System.Collections.Concurrent.ConcurrentBag<ProviderRecommendation>();
+        var rejectedAsns = new System.Collections.Concurrent.ConcurrentDictionary<uint, byte>();
+
+        using var liveBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var liveTime = RemainingNetworkTime(networkBudget, networkClock, TimeSpan.FromSeconds(4));
+        if (liveTime > TimeSpan.Zero)
+            liveBudget.CancelAfter(liveTime);
+        else
+            liveBudget.Cancel();
+        try
+        {
+            await Parallel.ForEachAsync(topCandidates,
+            new ParallelOptions { MaxDegreeOfParallelism = 40, CancellationToken = liveBudget.Token },
             async (entry, innerCt) =>
             {
                 var (candidate, _, abuserScore, ipsumRatio) = entry;
@@ -150,7 +195,7 @@ public class ProviderScorer(
                     {
                         abuserScore = DeserializeAbuseOrNull(cachedAbuse!) ?? abuserScore;
                     }
-                    else
+                    else if (liveAbuseAsns.Contains(candidate.Asn))
                     {
                         var ipInfo = await ipapiIs.GetAsnInfoForIpAsync(sampleIp, innerCt);
                         ripeCache?.Set($"abuse_{candidate.Asn}", SerializeAbuse(ipInfo.AbuserScore),
@@ -162,7 +207,11 @@ public class ProviderScorer(
 
                 // Hard-filter on now-real abuser_score.
                 // In IP-list mode strictAbuseFilter=false — user explicitly wants these providers.
-                if (strictAbuseFilter && abuserScore.HasValue && abuserScore.Value > 0.75) return;
+                if (strictAbuseFilter && abuserScore.HasValue && abuserScore.Value > 0.75)
+                {
+                    rejectedAsns.TryAdd(candidate.Asn, 0);
+                    return;
+                }
 
                 // Try up to 3 prefixes for ICMP ping (latency data — optional).
                 // Providers that don't respond to ICMP still appear in results without latency.
@@ -204,10 +253,10 @@ public class ProviderScorer(
                         PingStats? probe;
                         try
                         {
-                            var discovery = await pingService.PingAsync(ip, count: 1, cancellationToken: innerCt);
+                            var discovery = await PingWithThrottleAsync(ip, 1, innerCt);
                             probe = discovery == null
                                 ? null
-                                : await pingService.PingAsync(ip, count: 3, cancellationToken: innerCt) ?? discovery;
+                                : await PingWithThrottleAsync(ip, 3, innerCt) ?? discovery;
                         }
                         catch (OperationCanceledException) when (innerCt.IsCancellationRequested) { throw; }
                         catch
@@ -245,20 +294,29 @@ public class ProviderScorer(
 
                 // Enforce --max-ping: skip providers that exceed cap or couldn't be pinged at all.
                 if (maxPingMs.HasValue && (latencyMs == null || latencyMs > maxPingMs.Value))
+                {
+                    rejectedAsns.TryAdd(candidate.Asn, 0);
                     return;
+                }
 
                 // Use sampleIp as display anchor when no prefix responded to ICMP.
                 anchorIp ??= sampleIp;
-                if (anchorIp == null) return; // no usable prefix at all
+                if (anchorIp == null)
+                {
+                    rejectedAsns.TryAdd(candidate.Asn, 0);
+                    return;
+                }
 
-                double? abuseIpDbScore = abuseIpDb != null
-                    ? await abuseIpDb.GetBlockScoreAsync(candidate.Prefixes[0], innerCt)
-                    : null;
-
-                double? greyNoiseRatio = greyNoise != null
-                    ? await greyNoise.GetMaliciousRatioAsync(
+                Task<double?> abuseIpDbTask = abuseIpDb != null
+                    ? abuseIpDb.GetBlockScoreAsync(candidate.Prefixes[0], innerCt)
+                    : Task.FromResult<double?>(null);
+                Task<double?> greyNoiseTask = greyNoise != null
+                    ? greyNoise.GetMaliciousRatioAsync(
                         GetSampleIps(candidate.Prefixes[0], 3), innerCt)
-                    : null;
+                    : Task.FromResult<double?>(null);
+                await Task.WhenAll(abuseIpDbTask, greyNoiseTask);
+                double? abuseIpDbScore = await abuseIpDbTask;
+                double? greyNoiseRatio = await greyNoiseTask;
 
                 var (score, breakdown) = ComputeScore(
                     latencyMs, packetLoss,
@@ -267,33 +325,48 @@ public class ProviderScorer(
                     candidate.RpkiScore, candidate.TotalIpCount, weights,
                     upstreamCount: candidate.UpstreamCount);
 
-                string? pricingUrl = PricingPageResolver.Resolve(candidate.Asn, candidate.Name);
-
-                results.Add(new ProviderRecommendation(
-                    Asn:            candidate.Asn,
-                    Organization:   candidate.Name,
-                    Country:        candidate.Country,
-                    Website:        candidate.Website,
-                    PricingUrl:     pricingUrl,
-                    AnchorIp:       anchorIp,
-                    LatencyMs:      latencyMs,
-                    PacketLoss:     packetLoss,
-                    PeeringCount:   candidate.PeeringCount,
-                    PrefixCount:    candidate.Prefixes.Count,
-                    Score:          score,
-                    AbuserScore:    abuserScore,
-                    RpkiScore:      candidate.RpkiScore,
-                    InSpamhausDrop: false,
-                    IxLocations:    candidate.IxLocations,
-                    Breakdown:      breakdown,
-                    TotalIpCount:    candidate.TotalIpCount,
-                    HasIPv6:         candidate.HasIPv6,
-                    IPv6PrefixCount: candidate.IPv6PrefixCount,
-                    UpstreamCount:   candidate.UpstreamCount,
-                    CoverageCount:   candidate.CoverageCount,
-                    TotalListIps:    totalListIps
-                ));
+                results.Add(CreateRecommendation(
+                    candidate, anchorIp, latencyMs, packetLoss, score, abuserScore,
+                    breakdown, totalListIps));
             });
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+        }
+
+        // Keep locally scored candidates when optional probes run out of time.
+        // A max-ping filter still requires a completed ping and does not use this fallback.
+        if (!maxPingMs.HasValue)
+        {
+            var completedAsns = new HashSet<uint>(results.Select(result => result.Asn));
+            foreach (var entry in topCandidates)
+            {
+                var candidate = entry.c;
+                if (completedAsns.Contains(candidate.Asn) || rejectedAsns.ContainsKey(candidate.Asn))
+                    continue;
+
+                string? anchorIp = candidate.Prefixes.Select(GetAnchorIp).FirstOrDefault(ip => ip != null);
+                if (anchorIp == null) continue;
+
+                double? abuserScore = entry.abuserScore;
+                if (ripeCache != null
+                    && ripeCache.TryGet($"abuse_{candidate.Asn}", out var cachedAbuse))
+                    abuserScore = DeserializeAbuseOrNull(cachedAbuse!) ?? abuserScore;
+                if (strictAbuseFilter && abuserScore is > 0.75) continue;
+
+                var (score, breakdown) = ComputeScore(
+                    latencyMs: null, packetLoss: null,
+                    candidate.PeeringCount, candidate.Prefixes.Count,
+                    abuserScore, entry.ipsumRatio,
+                    abuseIpDbScore: null, greyNoiseRatio: null,
+                    candidate.RpkiScore, candidate.TotalIpCount, weights,
+                    upstreamCount: candidate.UpstreamCount);
+                results.Add(CreateRecommendation(
+                    candidate, anchorIp, null, null, score, abuserScore,
+                    breakdown, totalListIps));
+                completedAsns.Add(candidate.Asn);
+            }
+        }
 
         // Final selection: pinned ASNs are preferred over non-pinned (they claim returnTop
         // slots first), but the overall result never exceeds returnTop.
@@ -308,6 +381,66 @@ public class ProviderScorer(
             return [.. pinned.Concat(nonPinned)];
         }
         return [.. ordered.Take(returnTop)];
+    }
+
+    private static TimeSpan RemainingNetworkTime(
+        TimeSpan? totalBudget,
+        System.Diagnostics.Stopwatch clock,
+        TimeSpan phaseLimit)
+    {
+        if (!totalBudget.HasValue) return phaseLimit;
+        var remaining = totalBudget.Value - clock.Elapsed;
+        if (remaining <= TimeSpan.Zero) return TimeSpan.Zero;
+        return remaining < phaseLimit ? remaining : phaseLimit;
+    }
+
+    private static ProviderRecommendation CreateRecommendation(
+        ProviderCandidate candidate,
+        string anchorIp,
+        double? latencyMs,
+        double? packetLoss,
+        double score,
+        double? abuserScore,
+        ScoreBreakdown breakdown,
+        int totalListIps)
+        => new(
+            Asn:            candidate.Asn,
+            Organization:   candidate.Name,
+            Country:        candidate.Country,
+            Website:        candidate.Website,
+            PricingUrl:     PricingPageResolver.Resolve(candidate.Asn, candidate.Name),
+            AnchorIp:       anchorIp,
+            LatencyMs:      latencyMs,
+            PacketLoss:     packetLoss,
+            PeeringCount:   candidate.PeeringCount,
+            PrefixCount:    candidate.Prefixes.Count,
+            Score:          score,
+            AbuserScore:    abuserScore,
+            RpkiScore:      candidate.RpkiScore,
+            InSpamhausDrop: false,
+            IxLocations:    candidate.IxLocations,
+            Breakdown:      breakdown,
+            TotalIpCount:    candidate.TotalIpCount,
+            HasIPv6:         candidate.HasIPv6,
+            IPv6PrefixCount: candidate.IPv6PrefixCount,
+            UpstreamCount:   candidate.UpstreamCount,
+            CoverageCount:   candidate.CoverageCount,
+            TotalListIps:    totalListIps);
+
+    private async Task<PingStats?> PingWithThrottleAsync(
+        string ip,
+        int count,
+        CancellationToken ct)
+    {
+        await _pingThrottle.WaitAsync(ct);
+        try
+        {
+            return await pingService.PingAsync(ip, count, ct);
+        }
+        finally
+        {
+            _pingThrottle.Release();
+        }
     }
 
     private static double Prescore(
@@ -457,10 +590,16 @@ public class ProviderScorer(
 
         // Peering: 70% IX count (global reach) + 30% upstream count (routing resilience).
         // Falls back to pure IX count when upstream data is unavailable (upstreamCount == 0).
+        bool hasPeeringData = peeringCount.HasValue || upstreamCount > 0;
         double ixScore = Math.Min(1.0, (peeringCount ?? 0) / PeeringCount_AtMaxScore);
-        double ps = upstreamCount > 0
-            ? 0.7 * ixScore + 0.3 * Math.Min(1.0, upstreamCount / UpstreamCount_AtMaxScore)
-            : ixScore;
+        double upstreamScore = Math.Min(1.0, upstreamCount / UpstreamCount_AtMaxScore);
+        double ps = (peeringCount.HasValue, upstreamCount > 0) switch
+        {
+            (true, true) => 0.7 * ixScore + 0.3 * upstreamScore,
+            (true, false) => ixScore,
+            (false, true) => upstreamScore,
+            _ => 0.0,
+        };
 
         // Size: log scale (1K→0.17, 100K→0.83, 1M→1.0). Falls back to prefix count.
         double ss = totalIpCount > 0
@@ -479,10 +618,10 @@ public class ProviderScorer(
         // Missing latency or RPKI does NOT reduce the score — weight redistributes to others.
         var components = new List<(double value, double weight)>
         {
-            (ps,  weights.Peering),
             (abs, weights.Reputation),
             (ss,  weights.Size),
         };
+        if (hasPeeringData) components.Add((ps, weights.Peering));
         if (latencyMs.HasValue) components.Add((ls, weights.Latency));
         if (rpkiScore.HasValue) components.Add((rpkiScore.Value, weights.Rpki));
 

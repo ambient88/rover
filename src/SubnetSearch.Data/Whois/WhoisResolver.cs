@@ -6,7 +6,7 @@ namespace SubnetSearch.Data;
 
 public partial class WhoisResolver : IWhoisResolver
 {
-    private const int TimeoutSeconds = 30;
+    private const int TimeoutSeconds = 3;
     private readonly ConcurrentDictionary<string, Lazy<Task<WhoisResult?>>> _cache = new();
     [GeneratedRegex(@"refer:\s*([\w\.-]+)", RegexOptions.IgnoreCase)]
     private static partial Regex ReferralRegex();

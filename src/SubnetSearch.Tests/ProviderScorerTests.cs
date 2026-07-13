@@ -266,6 +266,46 @@ public class ProviderScorerTests
         }
     }
 
+    [Fact]
+    public async Task ScoreAsync_ExpiredNetworkBudgetKeepsLocalCandidates()
+    {
+        string dataDir = Directory.CreateTempSubdirectory().FullName;
+        try
+        {
+            var candidates = Enumerable.Range(1, 5)
+                .Select(index => new ProviderCandidate(
+                    (uint)index,
+                    $"Provider {index}",
+                    null,
+                    null,
+                    "Content",
+                    index,
+                    null,
+                    [$"12.{index}.0.0/24"]))
+                .ToList();
+            var cache = new RipeStatCache(dataDir);
+            var ripeHttp = new HttpClient(TestHttpMessageHandler.Custom(_ =>
+                throw new InvalidOperationException("RIPE Stat should not be called")));
+
+            var results = await CreateScorer(
+                    dataDir, cache, new RipeStatClient(ripeHttp, cache))
+                .ScoreAsync(
+                    candidates,
+                    maxPingMs: null,
+                    returnTop: 3,
+                    pingTopN: 5,
+                    strictAbuseFilter: false,
+                    networkBudget: TimeSpan.Zero);
+
+            results.Should().HaveCount(3);
+            results.Should().OnlyContain(result => result.LatencyMs == null);
+        }
+        finally
+        {
+            Directory.Delete(dataDir, true);
+        }
+    }
+
     private static ProviderScorer CreateScorer(
         string dataDir,
         RipeStatCache cache,

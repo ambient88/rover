@@ -9,6 +9,7 @@ namespace SubnetSearch.Network;
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class TracerouteService : ITracerouteService
 {
+    private static readonly TimeSpan TraceDeadline = TimeSpan.FromSeconds(6);
     // Linux: " 1  192.168.1.1  1.234 ms"  or " 3  * * *"
     [GeneratedRegex(@"^\s*(\d+)\s+(\S+)\s+([\d.]+)\s+ms", RegexOptions.Multiline)]
     private static partial Regex LinuxHopRegex();
@@ -23,6 +24,26 @@ public partial class TracerouteService : ITracerouteService
     private static partial Regex WindowsTimeoutHopRegex();
 
     public async Task<IReadOnlyList<TracerouteHop>> TraceAsync(string host, CancellationToken cancellationToken = default)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TraceDeadline);
+        try
+        {
+            return await TraceCoreAsync(host, deadline.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return [];
+        }
+    }
+
+    private static async Task<IReadOnlyList<TracerouteHop>> TraceCoreAsync(
+        string host,
+        CancellationToken cancellationToken)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {

@@ -129,4 +129,21 @@ public class RipeStatClientTests
         var (ok, _, _) = await client.GetAllPrefixesAsync(1);
         ok.Should().BeFalse("non-ok response must not be treated as authoritative empty");
     }
+
+    [Fact]
+    public async Task CallerCancellationIsNotConvertedToEmptyData()
+    {
+        var client = Client(out _);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await FluentActions.Invoking(() => client.GetAsnOverviewAsync(64500, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions.Invoking(() => client.GetNeighbourCountsAsync(64500, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions.Invoking(() => client.GetUpstreamAsnsAsync(64500, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+        await FluentActions.Invoking(() => client.SearchAsync("test", cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
 }

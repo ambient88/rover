@@ -26,9 +26,8 @@ public static class IpListAnalyzer
         return addresses;
     }
 
-    // Per-attempt timeout: a DPI-blackholed host (SYN dropped) must not hang the run
-    // for HttpClient's default 100s before the second route even gets a chance.
-    private static readonly TimeSpan FetchAttemptTimeout = TimeSpan.FromSeconds(20);
+    // Each route has a short timeout. The fallback starts after a brief head start.
+    private static readonly TimeSpan FetchAttemptTimeout = TimeSpan.FromSeconds(3);
 
     // Reads text from a local file path or HTTP/HTTPS URL.
     // Automatically rewrites GitHub blob URLs to raw.githubusercontent.com.
@@ -54,6 +53,14 @@ public static class IpListAnalyzer
                     $"--from does not accept direct IP URLs to prevent SSRF. Use a hostname instead.");
 
             var url = RewriteGitHubUrl(pathOrUrl);
+            if (fallbackHttp != null)
+                return await FirstSuccessfulAsync(
+                    ct,
+                    token => FetchWithTimeoutAsync(http, url, token),
+                    token => StartAfterDelayAsync(
+                        delayedToken => FetchWithTimeoutAsync(
+                            fallbackHttp, url, delayedToken, validateDestinations: true),
+                        token));
             try
             {
                 return await FetchWithTimeoutAsync(http, url, ct);
@@ -96,6 +103,14 @@ public static class IpListAnalyzer
                     "--from does not accept direct IP URLs to prevent SSRF. Use a hostname instead.");
 
             string url = RewriteGitHubUrl(pathOrUrl);
+            if (fallbackHttp != null)
+                return await FirstSuccessfulAsync(
+                    ct,
+                    token => ReadHttpIpsAsync(http, url, token, validateDestinations: false),
+                    token => StartAfterDelayAsync(
+                        delayedToken => ReadHttpIpsAsync(
+                            fallbackHttp, url, delayedToken, validateDestinations: true),
+                        token));
             try
             {
                 return await ReadHttpIpsAsync(http, url, ct, validateDestinations: false);
@@ -117,6 +132,58 @@ public static class IpListAnalyzer
         return await ExtractIpsAsync(reader, ct);
     }
 
+    private static async Task<T> FirstSuccessfulAsync<T>(
+        CancellationToken ct,
+        params Func<CancellationToken, Task<T>>[] operations)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var race = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var pending = operations.Select(operation => operation(race.Token)).ToList();
+        Exception? lastError = null;
+        while (pending.Count > 0)
+        {
+            var completed = await Task.WhenAny(pending);
+            pending.Remove(completed);
+            try
+            {
+                var result = await completed;
+                ct.ThrowIfCancellationRequested();
+                race.Cancel();
+                ObserveFaults(pending);
+                return result;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                race.Cancel();
+                ObserveFaults(pending);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+        }
+        throw lastError ?? new HttpRequestException("All routes failed while loading --from source.");
+    }
+
+    private static void ObserveFaults(IEnumerable<Task> tasks)
+    {
+        foreach (var task in tasks)
+            _ = task.ContinueWith(
+                finished => _ = finished.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+    }
+
+    private static async Task<T> StartAfterDelayAsync<T>(
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken ct)
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(150), ct);
+        return await operation(ct);
+    }
+
     private static async Task<string> FetchWithTimeoutAsync(
         HttpClient http,
         string url,
@@ -133,7 +200,7 @@ public static class IpListAnalyzer
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
             using var response = await http.SendAsync(
                 request,
-                HttpCompletionOption.ResponseContentRead,
+                HttpCompletionOption.ResponseHeadersRead,
                 attemptCts.Token);
             if (IsRedirect(response) && response.Headers.Location != null)
             {
@@ -141,7 +208,7 @@ public static class IpListAnalyzer
                 continue;
             }
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync(attemptCts.Token);
+            return await response.Content.ReadAsStringAsync(ct);
         }
         throw new HttpRequestException("Too many redirects while loading --from source.");
     }
@@ -168,9 +235,9 @@ public static class IpListAnalyzer
                 continue;
             }
             response.EnsureSuccessStatusCode();
-            await using var stream = await response.Content.ReadAsStreamAsync(attemptCts.Token);
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
-            return await ExtractIpsAsync(reader, attemptCts.Token);
+            return await ExtractIpsAsync(reader, ct);
         }
         throw new HttpRequestException("Too many redirects while loading --from source.");
     }

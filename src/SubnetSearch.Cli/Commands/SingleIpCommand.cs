@@ -16,21 +16,69 @@ public sealed class SingleIpCommand(CliContext ctx, string ip) : ICommand
             throw new ArgumentException($"Only IPv4 addresses are supported: {ip}");
 
         using var classifier = await ClassifierFactory.CreateAsync(ctx.DataDir, ctx.ForceWhois, ctx.PeeringDbHttp, ctx.Config.PeeringDbKey);
+        var diagnosticClock = System.Diagnostics.Stopwatch.StartNew();
+        var diagnosticLimit = TimeSpan.FromSeconds(8);
+        using var diagnosticBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        diagnosticBudget.CancelAfter(diagnosticLimit);
+        var diagnosticToken = diagnosticBudget.Token;
 
         // Classification and network tests run in parallel.
-        var classifyTask   = classifier.ClassifyAsync(ip, ct);
-        var pingTask       = new PingService().PingAsync(ip, cancellationToken: ct);
-        var tracerouteTask = new TracerouteService().TraceAsync(ip, ct);
-        var portsTask      = new PortScanner().ScanAsync(ip, cancellationToken: ct);
-        var httpTask       = new HttpFingerprintService().FingerprintAsync(ip, ct);
+        var classifyTask   = classifier.ClassifyAsync(ip, diagnosticToken);
+        var pingTask       = new PingService().PingAsync(ip, cancellationToken: diagnosticToken);
+        var tracerouteTask = new TracerouteService().TraceAsync(ip, diagnosticToken);
+        var portsTask      = new PortScanner().ScanAsync(ip, cancellationToken: diagnosticToken);
+        var httpTask       = new HttpFingerprintService().FingerprintAsync(ip, diagnosticToken);
 
-        await Task.WhenAll(classifyTask, pingTask, tracerouteTask, portsTask, httpTask);
+        try
+        {
+            await Task.WhenAll(classifyTask, pingTask, tracerouteTask, portsTask, httpTask);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+        }
 
-        // Traceroute analysis: PTR resolution + proxy detection runs after hops are available.
-        var traceAnalysis = await SubnetSearch.Network.TracerouteAnalyzer.AnalyzeAsync(
-            tracerouteTask.Result, new SubnetSearch.Classification.DnsResolver(), ct);
+        SubnetSearch.Core.Models.Classification.TracerouteAnalysis? traceAnalysis = null;
+        if (tracerouteTask.IsCompletedSuccessfully)
+        {
+            var remaining = diagnosticLimit - diagnosticClock.Elapsed;
+            if (remaining > TimeSpan.Zero)
+            {
+                using var analysisBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                analysisBudget.CancelAfter(remaining < TimeSpan.FromSeconds(1)
+                    ? remaining
+                    : TimeSpan.FromSeconds(1));
+                try
+                {
+                    traceAnalysis = await SubnetSearch.Network.TracerouteAnalyzer.AnalyzeAsync(
+                        tracerouteTask.Result,
+                        new SubnetSearch.Classification.DnsResolver(),
+                        analysisBudget.Token);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }
 
-        ClassificationRenderer.PrintResult(ip, classifyTask.Result, pingTask.Result, traceAnalysis, portsTask.Result, httpTask.Result);
+        var classification = classifyTask.IsCompletedSuccessfully
+            ? classifyTask.Result
+            : new SubnetSearch.Core.Models.Classification.ClassificationResult(
+                false, null, null, null, null, "Interactive deadline");
+        ClassificationRenderer.PrintResult(
+            ip,
+            classification,
+            pingTask.IsCompletedSuccessfully ? pingTask.Result : null,
+            traceAnalysis,
+            portsTask.IsCompletedSuccessfully ? portsTask.Result : null,
+            httpTask.IsCompletedSuccessfully ? httpTask.Result : null);
         return 0;
     }
 }

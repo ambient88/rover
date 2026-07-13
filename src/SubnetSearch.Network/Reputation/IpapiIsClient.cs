@@ -8,7 +8,7 @@ public record AsnInfo(double? AbuserScore, string? Type);
 public class IpapiIsClient(HttpClient http)
 {
     // ipapi.is free plan: 1 000 req/day. Limit concurrent requests to avoid burst.
-    private readonly SemaphoreSlim _throttle = new(3, 3);
+    private readonly SemaphoreSlim _throttle = new(6, 6);
 
     // Fetches both abuser_score and ASN type in one request.
     // type values: "hosting", "isp", "business", "education", "government", "inactive"
@@ -29,7 +29,7 @@ public class IpapiIsClient(HttpClient http)
             await _throttle.WaitAsync(ct);
             acquired = true;
             using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            reqCts.CancelAfter(TimeSpan.FromSeconds(8));
+            reqCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
             var json = await http.GetStringAsync(url, reqCts.Token);
             return ParseAsnInfo(json);
         }

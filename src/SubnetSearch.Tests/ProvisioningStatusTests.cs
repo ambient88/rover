@@ -25,7 +25,7 @@ public class ProvisioningStatusTests : IDisposable
     }
 
     [Theory]
-    // isUpdate, anyFileValid, anyPending → ожидаемый режим
+    // isUpdate, anyFileValid, anyFileInvalid, expected mode
     [InlineData(true,  true,  true,  ProvisioningMode.Visible)]  // update всегда Visible
     [InlineData(true,  true,  false, ProvisioningMode.Visible)]  // update даже когда всё свежее
     [InlineData(true,  false, true,  ProvisioningMode.Visible)]
@@ -33,8 +33,8 @@ public class ProvisioningStatusTests : IDisposable
     [InlineData(false, false, false, ProvisioningMode.Visible)]  // нет валидных → Visible
     [InlineData(false, true,  true,  ProvisioningMode.Silent)]   // есть данные + что-то устарело
     [InlineData(false, true,  false, ProvisioningMode.None)]     // всё свежее — тишина
-    public void Decide_SelectsMode(bool isUpdate, bool anyFileValid, bool anyPending, ProvisioningMode expected)
-        => ProvisioningStatus.Decide(isUpdate, anyFileValid, anyPending).Should().Be(expected);
+    public void Decide_SelectsMode(bool isUpdate, bool anyFileValid, bool anyFileInvalid, ProvisioningMode expected)
+        => ProvisioningStatus.Decide(isUpdate, anyFileValid, anyFileInvalid).Should().Be(expected);
 
     private ProvisioningStatus Make(IFileStorage storage, params FileDescriptor[] files)
         => new(storage, files, new FileMetadataStore(_dir));
@@ -46,6 +46,15 @@ public class ProvisioningStatusTests : IDisposable
 
         Make(new StubStorage("a.bin"), files).AnyFileValid().Should().BeTrue();
         Make(new StubStorage(), files).AnyFileValid().Should().BeFalse("нет ни одного валидного файла");
+    }
+
+    [Fact]
+    public void AnyFileInvalid_TrueWhenAtLeastOneFileIsMissing()
+    {
+        var files = new[] { new FileDescriptor("u1", "a.bin"), new FileDescriptor("u2", "b.bin") };
+
+        Make(new StubStorage("a.bin"), files).AnyFileInvalid().Should().BeTrue();
+        Make(new StubStorage("a.bin", "b.bin"), files).AnyFileInvalid().Should().BeFalse();
     }
 
     [Fact]

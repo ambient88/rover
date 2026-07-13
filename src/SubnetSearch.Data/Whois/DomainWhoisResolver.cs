@@ -46,6 +46,8 @@ public partial class DomainWhoisResolver : IDomainWhoisResolver
 
     public async Task<DomainWhoisResult> ResolveAsync(string domain, CancellationToken cancellationToken = default)
     {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(3));
         try
         {
             var tld = domain.Split('.').LastOrDefault()?.ToLowerInvariant();
@@ -53,12 +55,12 @@ public partial class DomainWhoisResolver : IDomainWhoisResolver
             if (tld != null && DefaultServers.TryGetValue(tld, out var specificServer))
                 whoisServer = specificServer;
 
-            var ianaResponse = await WhoisQuery.SendAsync("whois.iana.org", domain, cancellationToken);
+            var ianaResponse = await WhoisQuery.SendAsync("whois.iana.org", domain, budget.Token);
             var referral = ReferralRegex().Match(ianaResponse);
             if (referral.Success)
                 whoisServer = referral.Groups[1].Value;
 
-            var response = await WhoisQuery.SendAsync(whoisServer, domain, cancellationToken);
+            var response = await WhoisQuery.SendAsync(whoisServer, domain, budget.Token);
 
             string? registrar = null;
             DateTime? registrationDate = null;

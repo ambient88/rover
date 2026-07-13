@@ -8,8 +8,8 @@ internal static class WhoisQuery
     // WHOIS port per RFC 3912.
     private const int WhoisPort = 43;
 
-    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(3);
     internal const int MaxResponseChars = 1_048_576;
 
     // Raw WHOIS-over-TCP socket exchange — pure network I/O. The response parsing/size-limit logic

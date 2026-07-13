@@ -1,5 +1,6 @@
 using FluentAssertions;
 using SubnetSearch.Classification;
+using System.Net;
 
 namespace SubnetSearch.Tests;
 
@@ -7,6 +8,22 @@ namespace SubnetSearch.Tests;
 // whois → byAsn → byOrg (точное) → ManualOverrides (точное) → ManualOverrides (подстрока) → byOrg (подстрока).
 public class HostingWebsiteResolverTests
 {
+    private sealed class AsyncHandler(
+        Func<int, HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+        : HttpMessageHandler
+    {
+        private int _requests;
+        public int Requests => Volatile.Read(ref _requests);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            int requestNumber = Interlocked.Increment(ref _requests);
+            return responder(requestNumber, request, cancellationToken);
+        }
+    }
+
     private static HostingWebsiteResolver Resolver(
         Dictionary<uint, string>? byAsn = null,
         Dictionary<string, string>? byOrg = null)
@@ -87,4 +104,106 @@ public class HostingWebsiteResolverTests
     [Fact]
     public async Task GetIxLocations_NoPeeringDbResolver_ReturnsNull()
         => (await Resolver().GetIxLocationsAsync(24940)).Should().BeNull();
+
+    [Fact]
+    public async Task GetNetworkInfo_CallerCancellationStopsWaitingButKeepsSharedRequest()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new AsyncHandler(async (_, _, cancellationToken) =>
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return Json(HttpStatusCode.OK,
+                """{"data":[{"id":1,"website":"https://example.com"}]}""");
+        });
+        var resolver = CreatePeeringDbResolver(handler, TimeSpan.FromSeconds(2));
+        using var callerCancellation = new CancellationTokenSource();
+        Task<SubnetSearch.Core.Models.Classification.PeeringDbNetworkInfo?> first =
+            resolver.GetNetworkInfoFromPeeringDbAsync(64500, callerCancellation.Token);
+        await started.Task;
+
+        callerCancellation.Cancel();
+
+        await FluentActions.Awaiting(() => first).Should().ThrowAsync<OperationCanceledException>();
+        release.TrySetResult();
+        var second = await resolver.GetNetworkInfoFromPeeringDbAsync(64500);
+        second!.Website.Should().Be("https://example.com");
+        handler.Requests.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_TransientFailureIsRetried()
+    {
+        var handler = new AsyncHandler((requestNumber, _, _) => Task.FromResult(
+            requestNumber == 1
+                ? Json(HttpStatusCode.ServiceUnavailable, "")
+                : Json(HttpStatusCode.OK,
+                    """{"data":[{"id":1,"website":"https://example.com"}]}""")));
+        var resolver = CreatePeeringDbResolver(handler, TimeSpan.FromSeconds(1));
+
+        (await resolver.GetNetworkInfoFromPeeringDbAsync(64500)).Should().BeNull();
+        var retry = await resolver.GetNetworkInfoFromPeeringDbAsync(64500);
+
+        retry!.Website.Should().Be("https://example.com");
+        handler.Requests.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_UnderlyingTimeoutIsRetried()
+    {
+        var handler = new AsyncHandler(async (requestNumber, _, cancellationToken) =>
+        {
+            if (requestNumber == 1)
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return Json(HttpStatusCode.OK,
+                """{"data":[{"id":1,"website":"https://example.com"}]}""");
+        });
+        var resolver = CreatePeeringDbResolver(handler, TimeSpan.FromMilliseconds(30));
+
+        (await resolver.GetNetworkInfoFromPeeringDbAsync(64500)).Should().BeNull();
+        var retry = await resolver.GetNetworkInfoFromPeeringDbAsync(64500);
+
+        retry!.Website.Should().Be("https://example.com");
+        handler.Requests.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetIxLocations_TransientFailureIsRetried()
+    {
+        int ixRequests = 0;
+        var handler = new AsyncHandler((_, request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.Contains("netixlan"))
+            {
+                ixRequests++;
+                return Task.FromResult(ixRequests == 1
+                    ? Json(HttpStatusCode.BadGateway, "")
+                    : Json(HttpStatusCode.OK, """{"data":[{"name":"DE-CIX"}]}"""));
+            }
+            return Task.FromResult(Json(HttpStatusCode.OK,
+                """{"data":[{"id":7,"website":"https://example.com"}]}"""));
+        });
+        var resolver = CreatePeeringDbResolver(handler, TimeSpan.FromSeconds(1));
+
+        (await resolver.GetIxLocationsAsync(64500)).Should().BeNull();
+        var retry = await resolver.GetIxLocationsAsync(64500);
+
+        retry.Should().Equal("DE-CIX");
+        handler.Requests.Should().Be(3);
+    }
+
+    private static HostingWebsiteResolver CreatePeeringDbResolver(
+        HttpMessageHandler handler,
+        TimeSpan timeout)
+    {
+        var peeringDb = new PeeringDbWebsiteResolver(new HttpClient(handler));
+        return new HostingWebsiteResolver([], [], peeringDb, timeout);
+    }
+
+    private static HttpResponseMessage Json(HttpStatusCode status, string json)
+        => new(status)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        };
 }

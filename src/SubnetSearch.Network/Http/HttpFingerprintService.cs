@@ -7,6 +7,7 @@ namespace SubnetSearch.Network.Http;
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public class HttpFingerprintService
 {
+    private static readonly TimeSpan FingerprintDeadline = TimeSpan.FromSeconds(6);
     private static readonly HttpClient _http = new(new HttpClientHandler
     {
         AllowAutoRedirect = false,
@@ -58,8 +59,39 @@ public class HttpFingerprintService
     public async Task<HttpFingerprintResult?> FingerprintAsync(
         string host, CancellationToken ct = default)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(FingerprintDeadline);
+        try
+        {
+            return await FingerprintCoreAsync(host, deadline.Token);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<HttpFingerprintResult?> FingerprintCoreAsync(
+        string host,
+        CancellationToken ct)
+    {
         bool?   httpsRedirect = null;
         IEnumerable<KeyValuePair<string, IEnumerable<string>>>? headers = null;
+        var tlsTask = TlsProbe.ProbeAsync(host, 443, ct);
+
+        // UDP 2408 is useful only for IPs in ambiguous Cloudflare ranges.
+        bool isAmbiguousRange = CloudflareProductDetector.DetectFromIp(host) == "Ambiguous";
+        Task<bool?> udpTask = isAmbiguousRange
+            ? UdpProbe.IsClosedAsync(host, 2408, 2000, ct).ContinueWith(
+                t => (bool?)t.Result,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default)
+            : Task.FromResult<bool?>(null);
 
         try
         {
@@ -83,18 +115,6 @@ public class HttpFingerprintService
             }
             catch { }
         }
-
-        var tlsTask = TlsProbe.ProbeAsync(host, 443, ct);
-
-        // UDP 2408 probe runs only for IPs in ambiguous Cloudflare ranges.
-        bool isAmbiguousRange = CloudflareProductDetector.DetectFromIp(host) == "Ambiguous";
-        Task<bool?> udpTask = isAmbiguousRange
-            ? UdpProbe.IsClosedAsync(host, 2408, 2000, ct).ContinueWith(
-                t => (bool?)t.Result,
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default)
-            : Task.FromResult<bool?>(null);
 
         var (issuer, expiry, sans, tlsVersion) = await tlsTask;
         bool? udp2408Closed = isAmbiguousRange ? await udpTask : null;
