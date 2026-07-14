@@ -218,6 +218,8 @@ public sealed class HttpFileDownloaderHelpersTests : IDisposable
         var downloader = Downloader(TestHttpMessageHandler.Always(HttpStatusCode.OK, ""));
         string part = Path.Combine(_dir, "ro.part");
         await File.WriteAllTextAsync(part + ".meta", "{}");
+        // On Windows deleting a read-only file throws and must be swallowed;
+        // on Unix the delete simply succeeds (the directory governs permissions).
         File.SetAttributes(part + ".meta", FileAttributes.ReadOnly);
         try
         {
@@ -227,7 +229,8 @@ public sealed class HttpFileDownloaderHelpersTests : IDisposable
         }
         finally
         {
-            File.SetAttributes(part + ".meta", FileAttributes.Normal);
+            if (File.Exists(part + ".meta"))
+                File.SetAttributes(part + ".meta", FileAttributes.Normal);
         }
     }
 
