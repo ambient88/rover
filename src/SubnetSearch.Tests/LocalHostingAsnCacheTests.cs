@@ -51,6 +51,23 @@ public class LocalHostingAsnCacheTests : IDisposable
     }
 
     [Fact]
+    public async Task Get_NoInputFiles_ReturnsAndCachesEmptyResult()
+    {
+        var emptyDir = Directory.CreateTempSubdirectory();
+        try
+        {
+            var index = new StubIndex(_ => throw new InvalidOperationException(
+                "No ranges exist, so the index must not be queried."));
+
+            var result = await new LocalHostingAsnCache(emptyDir.FullName).GetAsync(index);
+
+            result.Should().BeEmpty();
+            index.Calls.Should().Be(0);
+        }
+        finally { Directory.Delete(emptyDir.FullName, true); }
+    }
+
+    [Fact]
     public async Task Get_InputFingerprintChangeRebuildsCache()
     {
         var cache = new LocalHostingAsnCache(_directory);

@@ -86,6 +86,26 @@ public class CloudflareProductDetectorTests
             .Should().Be("Cloudflare Tunnel");
 
     [Fact]
+    public void Resolve_AmbiguousRange_UdpUnknown_HttpResponds_IsTunnel()
+        => CloudflareProductDetector.Resolve("Cloudflare", "188.114.96.1", null,
+                httpResponded: true, udp2408Closed: null)
+            .Should().Be("Cloudflare Tunnel");
+
+    [Fact]
+    public void Resolve_AmbiguousRange_UdpUnknown_NoHttp_IsWarp()
+        => CloudflareProductDetector.Resolve("Cloudflare", "188.114.96.1", null,
+                httpResponded: false, udp2408Closed: null)
+            .Should().Be("Cloudflare WARP");
+
+    [Fact]
+    public void Parse_InvalidCidrInStaticTable_Throws()
+    {
+        // Guards the hardcoded product-range table against typos at build time.
+        var act = () => CloudflareProductDetector.Parse("not-a-cidr", "X");
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void Resolve_AmbiguousRange_UdpUnknown_HttpUnknown_IsTunnelOrWarp()
         => CloudflareProductDetector.Resolve("Cloudflare", "188.114.96.1", null)
             .Should().Be("Cloudflare Tunnel/WARP");

@@ -383,7 +383,7 @@ public class ProviderScorer(
         return [.. ordered.Take(returnTop)];
     }
 
-    private static TimeSpan RemainingNetworkTime(
+    internal static TimeSpan RemainingNetworkTime(
         TimeSpan? totalBudget,
         System.Diagnostics.Stopwatch clock,
         TimeSpan phaseLimit)
@@ -427,6 +427,9 @@ public class ProviderScorer(
             CoverageCount:   candidate.CoverageCount,
             TotalListIps:    totalListIps);
 
+    // Live ICMP wrapper used only by the excluded ScoreAsync orchestration loop;
+    // integration-scope for the same reason.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     private async Task<PingStats?> PingWithThrottleAsync(
         string ip,
         int count,
@@ -528,6 +531,9 @@ public class ProviderScorer(
         }
     }
 
+    // Live RIPE Stat fan-out used only by the excluded ScoreAsync orchestration loop;
+    // integration-scope for the same reason.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     private static async Task FetchRpkiAsync(
         IReadOnlyList<Phase1Candidate> entries,
         RipeStatClient ripeStat,
@@ -696,7 +702,7 @@ public class ProviderScorer(
         }
     }
 
-    private static double ComputeIpsumRatio(IReadOnlyList<string> prefixes, IIpReputationChecker ipsum)
+    internal static double ComputeIpsumRatio(IReadOnlyList<string> prefixes, IIpReputationChecker ipsum)
     {
         const int maxSamples = 300;
         int sampled = 0, flagged = 0;

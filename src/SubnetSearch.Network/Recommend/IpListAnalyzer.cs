@@ -52,6 +52,8 @@ public static class IpListAnalyzer
                 throw new ArgumentException(
                     $"--from does not accept direct IP URLs to prevent SSRF. Use a hostname instead.");
 
+            // With a fallback route both attempts race via FirstSuccessfulAsync;
+            // without one the single route's failure surfaces to the caller as is.
             var url = RewriteGitHubUrl(pathOrUrl);
             if (fallbackHttp != null)
                 return await FirstSuccessfulAsync(
@@ -61,19 +63,7 @@ public static class IpListAnalyzer
                         delayedToken => FetchWithTimeoutAsync(
                             fallbackHttp, url, delayedToken, validateDestinations: true),
                         token));
-            try
-            {
-                return await FetchWithTimeoutAsync(http, url, ct);
-            }
-            // A network failure on the first route starts a second attempt
-            // over the other route. User cancellation (Ctrl+C) is not intercepted.
-            catch (Exception ex) when (
-                fallbackHttp != null && !ct.IsCancellationRequested &&
-                ex is HttpRequestException or OperationCanceledException)
-            {
-                return await FetchWithTimeoutAsync(
-                    fallbackHttp, url, ct, validateDestinations: true);
-            }
+            return await FetchWithTimeoutAsync(http, url, ct);
         }
 
         // Resolve to absolute path to expose any traversal attempts in error messages,
@@ -102,6 +92,7 @@ public static class IpListAnalyzer
                 throw new ArgumentException(
                     "--from does not accept direct IP URLs to prevent SSRF. Use a hostname instead.");
 
+            // Same two-route strategy as ReadSourceAsync above.
             string url = RewriteGitHubUrl(pathOrUrl);
             if (fallbackHttp != null)
                 return await FirstSuccessfulAsync(
@@ -111,17 +102,7 @@ public static class IpListAnalyzer
                         delayedToken => ReadHttpIpsAsync(
                             fallbackHttp, url, delayedToken, validateDestinations: true),
                         token));
-            try
-            {
-                return await ReadHttpIpsAsync(http, url, ct, validateDestinations: false);
-            }
-            catch (Exception ex) when (
-                fallbackHttp != null && !ct.IsCancellationRequested
-                && ex is HttpRequestException or OperationCanceledException)
-            {
-                return await ReadHttpIpsAsync(
-                    fallbackHttp, url, ct, validateDestinations: true);
-            }
+            return await ReadHttpIpsAsync(http, url, ct, validateDestinations: false);
         }
 
         string fullPath = ValidateLocalSourcePath(pathOrUrl);
@@ -166,7 +147,7 @@ public static class IpListAnalyzer
         throw lastError ?? new HttpRequestException("All routes failed while loading --from source.");
     }
 
-    private static void ObserveFaults(IEnumerable<Task> tasks)
+    internal static void ObserveFaults(IEnumerable<Task> tasks)
     {
         foreach (var task in tasks)
             _ = task.ContinueWith(
@@ -229,20 +210,19 @@ public static class IpListAnalyzer
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
             using var response = await http.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, attemptCts.Token);
-            if (IsRedirect(response) && response.Headers.Location != null)
+            if (!IsRedirect(response) || response.Headers.Location == null)
             {
-                current = ResolveRedirect(current, response.Headers.Location);
-                continue;
+                response.EnsureSuccessStatusCode();
+                using var stream = await response.Content.ReadAsStreamAsync(ct);
+                using var reader = new StreamReader(stream);
+                return await ExtractIpsAsync(reader, ct);
             }
-            response.EnsureSuccessStatusCode();
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var reader = new StreamReader(stream);
-            return await ExtractIpsAsync(reader, ct);
+            current = ResolveRedirect(current, response.Headers.Location);
         }
         throw new HttpRequestException("Too many redirects while loading --from source.");
     }
 
-    private static async Task EnsurePublicDestinationAsync(Uri uri, CancellationToken ct)
+    internal static async Task EnsurePublicDestinationAsync(Uri uri, CancellationToken ct)
     {
         if (uri.Scheme is not "http" and not "https")
             throw new ArgumentException("--from redirects must use HTTP or HTTPS.");

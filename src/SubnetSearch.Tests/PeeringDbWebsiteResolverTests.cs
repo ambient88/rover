@@ -113,4 +113,78 @@ public class PeeringDbWebsiteResolverTests
         // A pre-cancelled token must surface promptly (no hang) as a non-available status.
         status.IsAvailable.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task IsAvailable_InternalTimeout_ReportsTimedOut()
+    {
+        // An OCE without the caller's token cancelled means the internal 10 s timeout fired.
+        var handler = TestHttpMessageHandler.Throws(new OperationCanceledException());
+
+        var status = await Client(handler).IsAvailableAsync();
+
+        status.IsAvailable.Should().BeFalse();
+        status.ErrorMessage.Should().Contain("timed out");
+    }
+
+    [Fact]
+    public async Task IsAvailable_NetworkError_ReportsIt()
+    {
+        var handler = TestHttpMessageHandler.Throws(new HttpRequestException("conn reset"));
+
+        var status = await Client(handler).IsAvailableAsync();
+
+        status.IsAvailable.Should().BeFalse();
+        status.ErrorMessage.Should().Contain("Network error");
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_PreCancelledToken_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{}"))
+            .GetNetworkInfoAsync(1, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_MalformedJson_ReturnsNull()
+    {
+        var info = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ broken"))
+            .GetNetworkInfoAsync(1);
+
+        info.Should().BeNull("optional enrichment swallows JSON failures");
+    }
+
+    [Fact]
+    public async Task GetIxLocations_PreCancelledToken_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{}"))
+            .GetIxLocationsAsync(7, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetIxLocations_HttpError_ReturnsNull()
+    {
+        var ix = await Client(TestHttpMessageHandler.Always(HttpStatusCode.InternalServerError, ""))
+            .GetIxLocationsAsync(7);
+
+        ix.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetIxLocations_MalformedJson_ReturnsNull()
+    {
+        var ix = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ broken"))
+            .GetIxLocationsAsync(7);
+
+        ix.Should().BeNull("optional enrichment swallows JSON failures");
+    }
 }

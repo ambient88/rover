@@ -30,6 +30,56 @@ public class HostingWebsiteResolverTests
         => new(byAsn ?? new(), byOrg ?? new(StringComparer.OrdinalIgnoreCase), peeringDbResolver: null);
 
     [Fact]
+    public void Ctor_NonPositiveEnrichmentTimeout_Throws()
+    {
+        var act = () => new HostingWebsiteResolver(new(), new(), null, TimeSpan.Zero);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task GetNetworkInfo_CancelledFetch_EvictsFailedEntryAndRethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new AsyncHandler((_, _, _) =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var resolver = new HostingWebsiteResolver(
+            new(), new(), new PeeringDbWebsiteResolver(new HttpClient(handler), null));
+
+        var act = () => resolver.GetNetworkInfoFromPeeringDbAsync(1, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetIxLocations_CancelledFetch_EvictsFailedEntryAndRethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new AsyncHandler((_, request, _) =>
+        {
+            // First call resolves the network info; the ix-location fetch is cancelled.
+            if (request.RequestUri!.AbsoluteUri.Contains("/api/net?"))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"data":[{"id":7,"website":"http://x","info_type":"NSP","ix_count":1}]}""",
+                        System.Text.Encoding.UTF8, "application/json")
+                });
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var resolver = new HostingWebsiteResolver(
+            new(), new(), new PeeringDbWebsiteResolver(new HttpClient(handler), null));
+
+        var act = () => resolver.GetIxLocationsAsync(1, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
     public void GetWebsite_WhoisWebsite_HasHighestPriority()
     {
         var r = Resolver(byAsn: new() { [1] = "https://from-asn" });

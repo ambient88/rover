@@ -39,6 +39,165 @@ public class RipeStatClientTests
         overview.Announced.Should().BeTrue();
     }
 
+    private static RipeStatCache TempCache(out string dir)
+    {
+        dir = Directory.CreateTempSubdirectory().FullName;
+        return new RipeStatCache(dir);
+    }
+
+    [Fact]
+    public async Task GetCountryAsns_EmptyCountriesList_ReturnsEmpty()
+    {
+        var handler = TestHttpMessageHandler.Always(HttpStatusCode.OK,
+            """{"status":"ok","data":{"countries":[]}}""");
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        (await client.GetCountryAsnsAsync("FI")).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetCountryAsns_CancelledMidRequest_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        await client.Invoking(c => c.GetCountryAsnsAsync("FI", cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetAllPrefixes_CancelledMidRequest_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        await client.Invoking(c => c.GetAllPrefixesAsync(64500, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetAllPrefixes_CorruptCacheEntry_RefetchesFromNetwork()
+    {
+        var cache = TempCache(out string dir);
+        try
+        {
+            cache.Set("pfx_64500", "{ broken");
+            var client = Client(out var handler, cache);
+
+            var (ok, ipv4, _) = await client.GetAllPrefixesAsync(64500);
+
+            ok.Should().BeTrue();
+            ipv4.Should().NotBeEmpty("the unreadable cache entry falls back to the network");
+            handler.Requests.Should().HaveCount(1);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task GetNeighbourCounts_SecondCall_ServedFromCache()
+    {
+        var cache = TempCache(out string dir);
+        try
+        {
+            var client = Client(out var handler, cache);
+
+            var first = await client.GetNeighbourCountsAsync(64500);
+            var second = await client.GetNeighbourCountsAsync(64500);
+
+            first.Should().Be((2, 1));
+            second.Should().Be(first);
+            handler.Requests.Should().HaveCount(1, "the second call is a cache hit");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task GetNeighbourCounts_NetworkFailure_ReturnsZeros()
+    {
+        var handler = TestHttpMessageHandler.Throws(new HttpRequestException("down"));
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        (await client.GetNeighbourCountsAsync(64500)).Should().Be((0, 0));
+    }
+
+    [Fact]
+    public async Task GetNeighbourCounts_CorruptCacheEntry_RefetchesFromNetwork()
+    {
+        var cache = TempCache(out string dir);
+        try
+        {
+            cache.Set("nbr_64500", "{ broken");
+            var client = Client(out var handler, cache);
+
+            (await client.GetNeighbourCountsAsync(64500)).Should().Be((2, 1));
+            handler.Requests.Should().HaveCount(1);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task GetRpkiRatio_CancelledMidRequest_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        await client.Invoking(c => c.GetRpkiValidityRatioAsync(1, ["1.2.3.0/24"], ct: cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetRpkiRatio_PartialFailures_ComputesFromCheckedPrefixesOnly()
+    {
+        int call = 0;
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            call++;
+            if (call == 2) throw new HttpRequestException("down");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"status":"ok","data":{"status":"valid"}}""",
+                    System.Text.Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new RipeStatClient(new HttpClient(handler), null);
+
+        var ratio = await client.GetRpkiValidityRatioAsync(1, ["1.2.3.0/24", "5.6.7.0/24"]);
+
+        ratio.Should().Be(1.0, "the failed prefix is excluded from the denominator");
+    }
+
+    [Fact]
+    public async Task GetRpkiRatio_CorruptCacheEntry_Refetches()
+    {
+        var cache = TempCache(out string dir);
+        try
+        {
+            cache.Set("rpki_64500", "{ broken", TimeSpan.FromDays(3650));
+            var client = Client(out var handler, cache);
+
+            var ratio = await client.GetRpkiValidityRatioAsync(64500, ["1.2.3.0/24"]);
+
+            ratio.Should().Be(1.0);
+            handler.Requests.Should().HaveCount(1);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     [Fact]
     public async Task GetPrefixes_ReturnsIpv4Only_SortedNumerically()
     {

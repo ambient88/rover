@@ -43,6 +43,18 @@ public class PortScannerTests
     }
 
     [Fact]
+    public async Task Scan_NullPorts_UsesDefaultWellKnownSet()
+    {
+        int[] wellKnown = [22, 80, 443, 3306, 8080, 8443];
+
+        // Loopback connects fail fast on closed ports; open results depend on the
+        // machine, so only the port universe is asserted, not exact membership.
+        var open = await new PortScanner().ScanAsync("127.0.0.1", ports: null);
+
+        open.Should().BeSubsetOf(wellKnown);
+    }
+
+    [Fact]
     public async Task Scan_MixedPorts_ReturnsOnlyOpenSorted()
     {
         var (openPort, listener) = StartListener();

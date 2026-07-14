@@ -56,6 +56,16 @@ public class AsnTypeResolverTests
     }
 
     [Theory]
+    [InlineData("government_admin", "government")]
+    [InlineData("education_research", "education")]
+    public void AsJsonInstitutionalCategories_MapDirectly(string category, string expected)
+    {
+        var map = Build(Tags(), new() { [64512] = category });
+
+        map[64512].Should().Be(expected);
+    }
+
+    [Theory]
     [InlineData("dsl", "isp")]
     [InlineData("mobile", "isp")]
     [InlineData("satnet", "isp")]

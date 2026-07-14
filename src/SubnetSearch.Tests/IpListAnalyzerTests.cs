@@ -133,6 +133,248 @@ public class IpListAnalyzerTests
         ph.Calls.Should().Be(1);
     }
 
+    // Hangs until the race cancels it, then fails with a NETWORK error rather than a
+    // cancellation, so the losing task ends up faulted instead of canceled.
+    private sealed class FaultsOnCancelHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(30), ct); }
+            catch (OperationCanceledException) { }
+            throw new HttpRequestException("connection torn down");
+        }
+    }
+
+    [Fact]
+    public async Task ReadSourceAsync_PrimaryFaultsAfterFallbackWon_FaultIsObserved()
+    {
+        // The primary route dies after the fallback already returned: its late fault
+        // must be observed (no UnobservedTaskException), and the result stays intact.
+        var primary = new HttpClient(new FaultsOnCancelHandler());
+        var (fallback, _) = OkClient("9.9.9.9");
+
+        var text = await IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", primary, fallbackHttp: fallback);
+
+        text.Should().Be("9.9.9.9");
+        await Task.Delay(300); // let the losing route fault and hit the observer
+    }
+
+    [Fact]
+    public async Task ReadSourceAsync_CancelledMidFlight_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        var h = new StubHandler(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var (fallback, fh) = OkClient("unused");
+
+        var act = () => IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", new HttpClient(h), cts.Token, fallbackHttp: fallback);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ReadIpsAsync_WithFallback_PrimaryWins()
+    {
+        var (primary, ph)  = OkClient("1.2.3.4\n5.6.7.8\n");
+        var (fallback, fh) = OkClient("9.9.9.9\n");
+
+        var ips = await IpListAnalyzer.ReadIpsAsync(
+            "https://example.com/list.txt", primary, fallbackHttp: fallback);
+
+        ips.Should().Contain(["1.2.3.4", "5.6.7.8"]);
+        ph.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReadIpsAsync_PrimaryNetworkFailure_FallsBackToSystemRoute()
+    {
+        var (primary, _)   = FailingClient();
+        var (fallback, fh) = OkClient("9.9.9.9\n");
+
+        var ips = await IpListAnalyzer.ReadIpsAsync(
+            "https://example.com/list.txt", primary, fallbackHttp: fallback);
+
+        ips.Should().Contain("9.9.9.9");
+        fh.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReadSourceAsync_FollowsRedirectIncludingRelativeLocation()
+    {
+        int call = 0;
+        var h = new StubHandler(_ =>
+        {
+            call++;
+            if (call == 1)
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("/moved/list.txt", UriKind.Relative);
+                return redirect;
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("1.2.3.4"),
+            };
+        });
+
+        var text = await IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", new HttpClient(h));
+
+        text.Should().Be("1.2.3.4");
+        h.LastUrl.Should().Contain("/moved/list.txt");
+    }
+
+    [Fact]
+    public async Task ReadSourceAsync_EndlessRedirects_Throw()
+    {
+        var h = new StubHandler(_ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.MovedPermanently);
+            redirect.Headers.Location = new Uri("https://example.com/next.txt");
+            return redirect;
+        });
+
+        var act = () => IpListAnalyzer.ReadSourceAsync(
+            "https://example.com/list.txt", new HttpClient(h));
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .WithMessage("*redirects*");
+    }
+
+    [Fact]
+    public async Task ReadIpsAsync_FollowsRedirectChain()
+    {
+        int call = 0;
+        var h = new StubHandler(_ =>
+        {
+            call++;
+            if (call <= 2) // two hops before the real payload
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect);
+                redirect.Headers.Location = new Uri($"https://example.com/hop{call}.txt");
+                return redirect;
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("1.2.3.4\n"),
+            };
+        });
+
+        var ips = await IpListAnalyzer.ReadIpsAsync(
+            "https://example.com/list.txt", new HttpClient(h));
+
+        ips.Should().Contain("1.2.3.4");
+        call.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ReadIpsAsync_EndlessRedirects_Throw()
+    {
+        var h = new StubHandler(_ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.MovedPermanently);
+            redirect.Headers.Location = new Uri("https://example.com/next.txt");
+            return redirect;
+        });
+
+        var act = () => IpListAnalyzer.ReadIpsAsync(
+            "https://example.com/list.txt", new HttpClient(h));
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .WithMessage("*redirects*");
+    }
+
+    // A stream whose DisposeAsync completes asynchronously, like a real network stream
+    // that still has buffered data in flight when the reader lets go of it.
+    private sealed class AsyncDisposingStream(byte[] payload) : MemoryStream(payload)
+    {
+        public override async ValueTask DisposeAsync()
+        {
+            await Task.Yield();
+            await base.DisposeAsync();
+        }
+    }
+
+    // Hands the response stream out unwrapped, so its asynchronous DisposeAsync is
+    // what the reader's await-using actually awaits.
+    private sealed class RawStreamContent(Stream stream) : HttpContent
+    {
+        protected override Task<Stream> CreateContentReadStreamAsync()
+            => Task.FromResult(stream);
+
+        protected override Task SerializeToStreamAsync(Stream target, System.Net.TransportContext? context)
+            => stream.CopyToAsync(target);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = -1;
+            return false;
+        }
+    }
+
+    [Fact]
+    public async Task ReadIpsAsync_StreamWithAsyncDisposal_IsHandled()
+    {
+        var h = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new RawStreamContent(new AsyncDisposingStream("1.2.3.4\n"u8.ToArray())),
+        });
+
+        var ips = await IpListAnalyzer.ReadIpsAsync(
+            "https://example.com/list.txt", new HttpClient(h));
+
+        ips.Should().Contain("1.2.3.4");
+    }
+
+    [Fact]
+    public async Task ObserveFaults_ConsumesLateFaults()
+    {
+        // Losing routes usually end up canceled, but a genuine late fault must be
+        // observed so it cannot surface as an UnobservedTaskException.
+        var faulted = Task.FromException(new InvalidOperationException("late loser"));
+
+        IpListAnalyzer.ObserveFaults([faulted]);
+
+        await Task.Delay(50); // let the observer continuation run
+        faulted.IsFaulted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExtractIps_OversizedNumericToken_IsDiscarded()
+    {
+        // A digit run longer than the 64-char token buffer must not produce an IP.
+        string text = new string('1', 100) + " 1.2.3.4 ";
+
+        var ips = await IpListAnalyzer.ExtractIpsAsync(new StringReader(text));
+
+        ips.Should().Equal("1.2.3.4");
+    }
+
+    [Fact]
+    public async Task EnsurePublicDestination_NonHttpScheme_Throws()
+    {
+        var act = () => IpListAnalyzer.EnsurePublicDestinationAsync(
+            new Uri("ftp://mirror.example/list.txt"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task EnsurePublicDestination_LoopbackHost_Throws()
+    {
+        // localhost resolves without touching the network and is never a public address.
+        var act = () => IpListAnalyzer.EnsurePublicDestinationAsync(
+            new Uri("http://localhost/list.txt"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
     [Fact]
     public async Task ReadSourceAsync_UserCancellation_DoesNotRetryViaFallback()
     {

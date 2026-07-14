@@ -202,6 +202,83 @@ public class HostingRangeIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task Load_SecondLoad_ReusesIndexCache()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+        await new HostingRangeIndex(cacheDir).LoadAsync(_dir); // builds and writes the index cache
+
+        var second = new HostingRangeIndex(cacheDir);
+        await second.LoadAsync(_dir); // served from the index cache, segments included
+
+        second.Find(IpConverter.IpToUint("10.0.0.5"))!.Value.ProviderName.Should().Be("H");
+    }
+
+    [Fact]
+    public async Task Load_RangesCacheCopiedOverIndexCache_IsRejectedAndRebuilt()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+        var ranges = new HostingRangeIndex(cacheDir);
+        await ranges.LoadRangesAsync(_dir); // writes the ranges cache (zero segments)
+        File.Copy(
+            Path.Combine(cacheDir, "hosting-ranges-v1.bin"),
+            Path.Combine(cacheDir, "hosting-index-v1.bin"), overwrite: true);
+
+        var full = new HostingRangeIndex(cacheDir);
+        await full.LoadAsync(_dir); // ranges without segments are invalid as an index cache
+
+        full.Find(IpConverter.IpToUint("10.0.0.5")).HasValue.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Load_TruncatedIndexCache_IsRebuilt()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+        Directory.CreateDirectory(cacheDir);
+        // Two bytes cannot hold the magic number: the reader throws and the cache is rebuilt.
+        File.WriteAllBytes(Path.Combine(cacheDir, "hosting-index-v1.bin"), [1, 2]);
+
+        var index = new HostingRangeIndex(cacheDir);
+        await index.LoadAsync(_dir);
+
+        index.Find(IpConverter.IpToUint("10.0.0.5"))!.Value.ProviderName.Should().Be("H");
+    }
+
+    [Fact]
+    public async Task Load_UnwritableIndexCache_StillServesFromMemory()
+    {
+        Write("ipcat-datacenters.csv", "10.0.0.0,10.0.0.255,\"H\",\"h.example\"\n");
+        var cacheDir = Path.Combine(_dir, "cache");
+        // A directory squatting on the cache file name makes the final File.Move fail.
+        Directory.CreateDirectory(Path.Combine(cacheDir, "hosting-index-v1.bin"));
+
+        var index = new HostingRangeIndex(cacheDir);
+        await index.LoadAsync(_dir);
+
+        index.Find(IpConverter.IpToUint("10.0.0.5"))!.Value.ProviderName.Should().Be("H");
+        Directory.GetFiles(cacheDir, "*.tmp")
+            .Should().BeEmpty("the temp file is cleaned up after a failed move");
+    }
+
+    [Fact]
+    public async Task Find_SameStartRanges_WiderListedLater_WinsAndSegmentsMerge()
+    {
+        // Both ranges start at the same IP, so the stable sort keeps file order and the
+        // wider one gets the higher index. It wins on both sides of the inner range's
+        // end boundary, and the sweep merges those contiguous same-range segments.
+        Write("ipcat-datacenters.csv",
+            "10.0.0.100,10.0.0.150,\"Short\",\"short.example\"\n" +
+            "10.0.0.100,10.0.0.200,\"Long\",\"long.example\"\n");
+        var index = new HostingRangeIndex();
+        await index.LoadAsync(_dir);
+
+        index.Find(IpConverter.IpToUint("10.0.0.120"))!.Value.ProviderName.Should().Be("Long");
+        index.Find(IpConverter.IpToUint("10.0.0.175"))!.Value.ProviderName.Should().Be("Long");
+    }
+
+    [Fact]
     public async Task Load_SourceChange_InvalidatesCache()
     {
         var cacheDir = Path.Combine(_dir, "cache");

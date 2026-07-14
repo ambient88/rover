@@ -102,7 +102,8 @@ public static class CloudflareProductDetector
         return fromIp ?? "Cloudflare CDN";
     }
 
-    private static (uint Start, uint End, string Product) Parse(string cidr, string product)
+    // Internal so the guard against typos in the static range table is testable.
+    internal static (uint Start, uint End, string Product) Parse(string cidr, string product)
     {
         if (!IpConverter.TryParseCidr(cidr, out var start, out var end))
             throw new InvalidOperationException($"Invalid CIDR in CloudflareProductDetector: {cidr}");

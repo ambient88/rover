@@ -8,22 +8,34 @@ public class ProviderScanner : IProviderScanner
 {
     private readonly RipeStatClient   _ripeStat;
     private readonly IWebsiteResolver _websiteResolver;
-    private readonly IIpRangeIndex?   _ipIndex; 
+    private readonly IIpRangeIndex?   _ipIndex;
+    private readonly TimeSpan         _scanBudget;
 
     public ProviderScanner(
         RipeStatClient   ripeStat,
         IWebsiteResolver websiteResolver,
         IIpRangeIndex?   ipIndex = null)
+        : this(ripeStat, websiteResolver, ipIndex, TimeSpan.FromSeconds(7))
+    {
+    }
+
+    // Internal seam: tests shrink the scan budget instead of waiting out the real one.
+    internal ProviderScanner(
+        RipeStatClient   ripeStat,
+        IWebsiteResolver websiteResolver,
+        IIpRangeIndex?   ipIndex,
+        TimeSpan         scanBudget)
     {
         _ripeStat        = ripeStat        ?? throw new ArgumentNullException(nameof(ripeStat));
         _websiteResolver = websiteResolver ?? throw new ArgumentNullException(nameof(websiteResolver));
         _ipIndex         = ipIndex;
+        _scanBudget      = scanBudget;
     }
 
     public async Task<ProviderScanResult?> ScanAsync(string query, CancellationToken cancellationToken = default)
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(TimeSpan.FromSeconds(7));
+        budget.CancelAfter(_scanBudget);
         var budgetToken = budget.Token;
 
         (uint asn, IReadOnlyList<RipeStatClient.SearchResult> candidates) resolved;

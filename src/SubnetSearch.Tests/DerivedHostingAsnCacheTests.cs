@@ -103,6 +103,34 @@ public sealed class DerivedHostingAsnCacheTests : IDisposable
         rebuiltIndex.Calls.Should().Be(1);
     }
 
+    [Fact]
+    public void LoadOrBuild_UnwritableCachePath_StillReturnsBuiltResult()
+    {
+        HostingIpRange[] ranges =
+        [
+            new() { StartIp = 10, EndIp = 19, ProviderName = "Provider" }
+        ];
+        string cachePath = Path.Combine(
+            DerivedCachePath.ForDataDirectory(_dataDir, "classification"),
+            "hosting-asns-v1.bin");
+        // A directory squatting on the cache file name makes the final File.Move fail,
+        // exercising the best-effort write path (swallow + temp cleanup).
+        Directory.CreateDirectory(cachePath);
+        try
+        {
+            HashSet<uint> result = DerivedHostingAsnCache.LoadOrBuild(
+                _dataDir, ranges, new StubIndex(_ => Record(10, 64500)));
+
+            result.Should().BeEquivalentTo([64500u]);
+            Directory.GetFiles(Path.GetDirectoryName(cachePath)!, "*.tmp")
+                .Should().BeEmpty("the temp file is cleaned up after a failed move");
+        }
+        finally
+        {
+            Directory.Delete(cachePath);
+        }
+    }
+
     private static Ip2AsnRecord Record(uint ip, uint asn) => new()
     {
         StartIp = ip,

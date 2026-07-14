@@ -62,6 +62,41 @@ public class RipeStatCacheTests
         finally { Directory.Delete(dir.FullName, true); }
     }
 
+    [Fact]
+    public async Task LoadAsync_CorruptDiskCache_StartsEmptyWithoutThrowing()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(dir.FullName, "ripe_cache.json"), "{ broken");
+
+            var cache = await RipeStatCache.LoadAsync(dir.FullName);
+
+            cache.TryGet("anything", out _).Should().BeFalse();
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
+    [Fact]
+    public async Task FlushIfDirty_UnwritableTempFile_IsBestEffortAndStaysDirty()
+    {
+        var dir = Directory.CreateTempSubdirectory();
+        try
+        {
+            // A directory squatting on the temp file name makes the write fail soft.
+            Directory.CreateDirectory(Path.Combine(dir.FullName, "ripe_cache.json.tmp"));
+            var cache = new RipeStatCache(dir.FullName);
+            cache.Set("k", "v", TimeSpan.FromHours(1));
+
+            var act = () => cache.FlushIfDirtyAsync();
+
+            await act.Should().NotThrowAsync();
+            File.Exists(Path.Combine(dir.FullName, "ripe_cache.json"))
+                .Should().BeFalse("the flush failed and will be retried later");
+        }
+        finally { Directory.Delete(dir.FullName, true); }
+    }
+
     // Negative BGPView fallback caching uses pfx0_{asn} when both sources confirm no prefixes.
     // The marker prevents repeated throttled fallback requests during its TTL.
 

@@ -29,6 +29,39 @@ public class InMemoryCacheTests
     }
 
     [Fact]
+    public void Evict_RemovesExpiredEntries_KeepsLiveOnes()
+    {
+        using var cache = new InMemoryCache(TimeSpan.FromHours(1));
+        int expiredCalls = 0, liveCalls = 0;
+        cache.GetOrAdd("expired", () => { expiredCalls++; return "x"; }, ttl: TimeSpan.Zero);
+        cache.GetOrAdd("live", () => { liveCalls++; return "y"; }, ttl: TimeSpan.FromHours(1));
+        Thread.Sleep(15); // Let the zero-TTL entry expire.
+
+        cache.Evict();
+
+        cache.GetOrAdd("expired", () => { expiredCalls++; return "x"; }, ttl: TimeSpan.FromHours(1));
+        cache.GetOrAdd("live", () => { liveCalls++; return "y"; });
+        expiredCalls.Should().Be(2, "the swept entry is recomputed");
+        liveCalls.Should().Be(1, "the live entry survives the sweep");
+    }
+
+    [Fact]
+    public void GetOrAdd_AtCapacity_EvictsOldestTenth()
+    {
+        using var cache = new InMemoryCache(TimeSpan.FromHours(1));
+        // The first key expires earliest, so capacity pressure must evict it first.
+        cache.GetOrAdd("first", () => "v", ttl: TimeSpan.FromMinutes(1));
+        for (int i = 1; i < 100_000; i++)
+            cache.GetOrAdd($"k{i}", () => "v");
+
+        int calls = 0;
+        cache.GetOrAdd("overflow", () => { calls++; return "o"; });
+        cache.GetOrAdd("first", () => { calls++; return "v2"; });
+
+        calls.Should().Be(2, "the oldest entry was evicted to make room, so it is recomputed");
+    }
+
+    [Fact]
     public void GetOrAdd_ExpiredEntry_RecomputesValue()
     {
         using var cache = new InMemoryCache(TimeSpan.FromHours(1));

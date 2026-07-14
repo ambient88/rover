@@ -68,6 +68,13 @@ public class CdnDetectorTests
     }
 
     [Fact]
+    public void ExtractXPoweredBy_ReturnsNullWhenAbsent()
+    {
+        var headers = Headers(("Server", "nginx"));
+        CdnDetector.ExtractXPoweredBy(headers).Should().BeNull();
+    }
+
+    [Fact]
     public void Fastly_DetectedViaXServedBy()
     {
         var headers = Headers(("X-Served-By", "cache-ams21057-AMS"));

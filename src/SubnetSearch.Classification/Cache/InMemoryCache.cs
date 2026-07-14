@@ -42,7 +42,8 @@ public class InMemoryCache : ICache, IDisposable
 
     public void Dispose() => _evictionTimer.Dispose();
 
-    private void Evict()
+    // Internal so tests can trigger the sweep without waiting for the 5-minute timer.
+    internal void Evict()
     {
         var now = DateTime.UtcNow;
         foreach (var key in _cache.Keys.ToList())

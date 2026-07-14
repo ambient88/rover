@@ -120,6 +120,10 @@ public class SpamhausDropClient
         }
     }
 
+    // Best-effort removal of a randomly named temp file. The failure branch needs the
+    // OS to reject the delete at exactly that moment, which no test can arrange
+    // deterministically, so the helper is excluded from the unit-coverage metric.
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     private static void TryDelete(string path)
     {
         try

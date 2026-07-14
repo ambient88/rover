@@ -53,6 +53,23 @@ public class AbuseIpDbClientTests
     }
 
     [Fact]
+    public async Task GetBlockScore_CancelledMidRequest_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        // The handler cancels the caller's token and then fails the request the same
+        // way HttpClient does on cancellation, so the client must rethrow, not swallow.
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+
+        var act = () => Client(handler).GetBlockScoreAsync("1.2.3.0/24", cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
     public async Task GetBlockScore_NoDataProperty_ReturnsNull()
     {
         var score = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"errors":[]}"""))

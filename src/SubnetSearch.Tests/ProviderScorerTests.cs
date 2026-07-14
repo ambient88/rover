@@ -68,6 +68,62 @@ public class ProviderScorerTests
     }
 
     [Fact]
+    public void ComputeScore_UpstreamsOnly_SupplyThePeeringComponent()
+    {
+        var withUpstreams = ProviderScorer.ComputeScore(
+            10, null, peeringCount: null, 10, 0.0, 0.0, null, null, null, upstreamCount: 8).Score;
+        var without = ProviderScorer.ComputeScore(
+            10, null, peeringCount: null, 10, 0.0, 0.0, null, null, null, upstreamCount: 0).Score;
+
+        withUpstreams.Should().BeGreaterThan(without,
+            "upstream count alone must feed the peering component when IX data is missing");
+    }
+
+    [Fact]
+    public void RemainingNetworkTime_CapsToBudgetAndPhaseLimit()
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        // No budget: the phase limit applies untouched.
+        ProviderScorer.RemainingNetworkTime(null, clock, TimeSpan.FromSeconds(5))
+            .Should().Be(TimeSpan.FromSeconds(5));
+        // Remaining budget smaller than the phase limit wins.
+        ProviderScorer.RemainingNetworkTime(TimeSpan.FromMilliseconds(1), clock, TimeSpan.FromSeconds(5))
+            .Should().BeLessThan(TimeSpan.FromSeconds(5));
+        // A generous budget falls back to the phase limit.
+        ProviderScorer.RemainingNetworkTime(TimeSpan.FromHours(1), clock, TimeSpan.FromSeconds(5))
+            .Should().Be(TimeSpan.FromSeconds(5));
+    }
+
+    private sealed class ThrowingReputation : IIpReputationChecker
+    {
+        public int? Check(uint ipInt) => throw new InvalidOperationException("boom");
+    }
+
+    [Fact]
+    public void ComputeIpsumRatio_SamplesAcrossPrefixes()
+    {
+        var dirty = new DirtyReputation();
+
+        var ratio = ProviderScorer.ComputeIpsumRatio(["1.2.3.0/24"], dirty);
+
+        ratio.Should().Be(1.0, "every sampled IP is flagged");
+    }
+
+    private sealed class DirtyReputation : IIpReputationChecker
+    {
+        public int? Check(uint ipInt) => 5;
+    }
+
+    [Fact]
+    public void ComputeIpsumRatio_CheckerFailure_FailsSoftToZero()
+    {
+        var ratio = ProviderScorer.ComputeIpsumRatio(["1.2.3.0/24"], new ThrowingReputation());
+
+        ratio.Should().Be(0.0, "a broken reputation source must not sink the scoring pipeline");
+    }
+
+    [Fact]
     public void ComputeScore_ReturnsBreakdown()
     {
         var (_, breakdown) = ProviderScorer.ComputeScore(10, null, 20, 50, 0.1, 0.0, null, null, 0.9);

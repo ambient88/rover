@@ -338,4 +338,173 @@ public class HostingClassifierTests
         r.IsHosting.Should().BeFalse();
         r.Source.Should().StartWith("Error");
     }
+
+    [Fact]
+    public async Task Classify_RouterPtr_DowngradesHostingToInfrastructure()
+    {
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "CarrierHost") },
+            hostingAsns: new HashSet<uint> { 64500 },
+            ptr: "ae2.cr6-cph1.ip4.gtt.net");
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeFalse("a router interface PTR marks backbone gear, not rentable hosting");
+    }
+
+    [Fact]
+    public async Task Classify_VpsPtr_UpgradesNonHostingAndResolvesWebsite()
+    {
+        // Core misses hosting (ASN not in the set), but the PTR names a VPS instance.
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64502, "Quiet Networks") },
+            hostingAsns: new HashSet<uint>(),
+            ptr: "vm-42.quiethost.example");
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeTrue("the PTR explicitly names a VPS instance");
+        r.HostingType.Should().Be(HostingType.Vps);
+    }
+
+    [Fact]
+    public async Task Classify_RangeHitWithNetId_RequestsIxLocations()
+    {
+        var range = new HostingIpRange
+        {
+            StartIp = IpConverter.IpToUint("5.6.7.0"), EndIp = IpConverter.IpToUint("5.6.7.255"),
+            ProviderName = "RangeHost",
+        };
+        var website = new StubWebsite
+        {
+            Info = new PeeringDbNetworkInfo("https://rangehost.example", "hosting", IxCount: 3, NetId: 42),
+        };
+        var sut = Build(
+            range: range,
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "RangeHost") },
+            website: website);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.PeeringCount.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Classify_WhoisHostingOrgWithoutLocalWebsite_FallsBackToPeeringDb()
+    {
+        // Neither the local map nor WHOIS provide a website, so the PeeringDB path runs.
+        var whois = new StubWhois(new WhoisResult(
+            "HostingCorp", "DE", null, null, null, "active", "raw", Rir: "RIPE"));
+        var sut = Build(
+            records: new[] { Rec("5.6.7.0", "5.6.7.255", 64500, "HostingCorp") },
+            hostingAsns: new HashSet<uint> { 64500 },
+            whois: whois);
+
+        var r = await sut.ClassifyAsync("5.6.7.8");
+
+        r.IsHosting.Should().BeTrue();
+        r.Website.Should().BeNull("no source had a website, but the lookup chain must not fail");
+    }
+
+    [Fact]
+    public async Task Classify_WhoisFallback_NonHostingOrg_ShortCircuits()
+    {
+        var whois = new StubWhois(new WhoisResult(
+            "Google LLC", "US", null, null, null, "active", "raw",
+            AbuseEmail: "abuse@google.example", Rir: "ARIN"));
+        var sut = Build(records: Array.Empty<Ip2AsnRecord>(), whois: whois);
+
+        var r = await sut.ClassifyAsync("9.9.9.9");
+
+        r.IsHosting.Should().BeFalse();
+        r.Source.Should().Be("WHOIS");
+        r.Rir.Should().Be("ARIN");
+    }
+
+    [Fact]
+    public async Task Classify_WhoisFallback_HostingKeywordOrg_ResolvesTypeAndWebsite()
+    {
+        var whois = new StubWhois(new WhoisResult(
+            "SuperHosting Ltd", "BG", "https://superhosting.example", null, null, "active", "raw", Rir: "RIPE"));
+        var sut = Build(records: Array.Empty<Ip2AsnRecord>(), whois: whois);
+
+        var r = await sut.ClassifyAsync("9.9.9.9");
+
+        r.IsHosting.Should().BeTrue("the organization name carries a hosting keyword");
+        r.Source.Should().Be("WHOIS");
+        r.HostingType.Should().Be(HostingType.Vps);
+        r.Website.Should().Be("https://superhosting.example");
+    }
+
+    [Fact]
+    public async Task Classify_WhoisFallback_NullOrganization_EndsUnknown()
+    {
+        var whois = new StubWhois(new WhoisResult(
+            null, "FR", null, null, null, null, "raw"));
+        var sut = Build(records: Array.Empty<Ip2AsnRecord>(), whois: whois);
+
+        var r = await sut.ClassifyAsync("9.9.9.9");
+
+        r.Source.Should().Be("Unknown");
+    }
+
+    private sealed class ThrowingWhois(Exception ex) : IWhoisResolver
+    {
+        public Task<WhoisResult?> ResolveAsync(string ip, CancellationToken ct = default) => throw ex;
+    }
+
+    [Fact]
+    public async Task Classify_CancellationInsideCore_PropagatesInsteadOfErrorResult()
+    {
+        var sut = Build(
+            records: Array.Empty<Ip2AsnRecord>(),
+            whois: new ThrowingWhois(new OperationCanceledException()));
+
+        var act = () => sut.ClassifyAsync("9.9.9.9");
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task Classify_OutOfMemoryInsideCore_PropagatesInsteadOfErrorResult()
+    {
+        var sut = Build(
+            records: Array.Empty<Ip2AsnRecord>(),
+            whois: new ThrowingWhois(new OutOfMemoryException()));
+
+        var act = () => sut.ClassifyAsync("9.9.9.9");
+
+        await act.Should().ThrowAsync<OutOfMemoryException>();
+    }
+
+    private sealed class DisposableGeo : IGeolocator
+    {
+        public int DisposeCalls { get; private set; }
+        public GeoLocation? Locate(string ip) => null;
+        public void Dispose() => DisposeCalls++;
+    }
+
+    private sealed class DisposableResource : IDisposable
+    {
+        public int DisposeCalls { get; private set; }
+        public void Dispose() => DisposeCalls++;
+    }
+
+    [Fact]
+    public void Dispose_ReleasesGeolocatorAndOwnedResourceOnce()
+    {
+        var geo = new DisposableGeo();
+        var owned = new DisposableResource();
+        var sut = new HostingClassifier(
+            new StubRange(null), new IpRangeIndex(Array.Empty<Ip2AsnRecord>()),
+            [], [], new StubWebsite(), null, false,
+            new StubHostingType(), new StubDns(null), geo,
+            reputationChecker: null, ownedResource: owned);
+
+        sut.Dispose();
+        sut.Dispose();
+
+        geo.DisposeCalls.Should().Be(1, "double dispose must be idempotent");
+        owned.DisposeCalls.Should().Be(1);
+    }
 }

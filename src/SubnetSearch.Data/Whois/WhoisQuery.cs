@@ -8,8 +8,6 @@ internal static class WhoisQuery
     // WHOIS port per RFC 3912.
     private const int WhoisPort = 43;
 
-    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(3);
     internal const int MaxResponseChars = 1_048_576;
 
     // Raw WHOIS over TCP uses direct network I/O. Response parsing and size limits
@@ -17,11 +15,15 @@ internal static class WhoisQuery
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public static async Task<string> SendAsync(string server, string query, CancellationToken cancellationToken)
     {
+        // WHOIS timeouts: 2 s to connect, 3 s for the whole exchange.
+        var connectTimeout = TimeSpan.FromSeconds(2);
+        var operationTimeout = TimeSpan.FromSeconds(3);
+
         using var operationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        operationCts.CancelAfter(OperationTimeout);
+        operationCts.CancelAfter(operationTimeout);
 
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(operationCts.Token);
-        connectCts.CancelAfter(ConnectTimeout);
+        connectCts.CancelAfter(connectTimeout);
 
         using var tcp = new TcpClient();
         await tcp.ConnectAsync(server, WhoisPort, connectCts.Token);

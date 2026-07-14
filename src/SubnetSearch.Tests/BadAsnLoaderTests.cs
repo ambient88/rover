@@ -25,6 +25,16 @@ public class BadAsnLoaderTests
     }
 
     [Fact]
+    public async Task LoadAsync_MissingFile_ReturnsEmptySet()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"nope-{Guid.NewGuid():N}.txt");
+
+        var result = await new BadAsnLoader().LoadAsync(path);
+
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
     public void DefaultManifest_ContainsBadAsnSource()
         => DownloadManagerFactory.GetDefaultFiles()
             .Should().Contain(file => file.FileName == "bad-asn-list.txt");

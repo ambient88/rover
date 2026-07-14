@@ -696,14 +696,10 @@ public class ProviderFinder(
         {
             await _ripeSemaphore.WaitAsync(ct);
             acquired = true;
+            // The client fails soft on its own (Ok=false); only cancellation escapes it.
             (ripeOk, ipv4, ipv6) = await ripeClient.GetAllPrefixesAsync(asn, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { }
         finally { if (acquired) _ripeSemaphore.Release(); }
-
-        if (ipv4.Count == 0 && localPrefixes is { Count: > 0 })
-            ipv4 = localPrefixes;
 
         // BGPView fallback: RIPE Stat and local data returned no IPv4 prefixes for this ASN.
         // The fallback is limited to about 42 requests per minute and only runs for missing ASNs.
@@ -790,10 +786,9 @@ public class ProviderFinder(
         {
             await _ripeSemaphore.WaitAsync(ct);
             acquired = true;
+            // The client fails soft on its own (0, 0); only cancellation escapes it.
             return await ripeClient.GetNeighbourCountsAsync(asn, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { return (0, 0); }
         finally { if (acquired) _ripeSemaphore.Release(); }
     }
 
@@ -990,63 +985,45 @@ public class ProviderFinder(
             {
                 ProviderCandidate? candidate = null;
                 bool foundInPeeringDb = false;
-                bool haveRecord = false;
 
-                // Cache-aside: the supplement ASN sets are stable across runs, so without a
-                // cache, the same per-ASN /net?asn= lookups repeat on every run.
-                // The RAW record is cached pre-filter so per-call type/CDN filters below apply.
-                if (_ripeCache != null && _ripeCache.TryGet($"pdb_{entry.Asn}", out var cachedNet))
+                // Entries reaching this loop had no readable pdb_ cache record moments ago
+                // (the pre-loop pass consumed every hit), so the lookup goes straight to the
+                // network. The RAW record is cached pre-filter so per-call type/CDN filters
+                // below apply, and the next run's pre-loop pass serves it from the cache.
+                try
                 {
-                    var rec = DeserializePdbNetOrNull(cachedNet!);
-                    if (rec != null)
+                    using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
+                    reqCts.CancelAfter(TimeSpan.FromSeconds(2));
+                    using var req = PdbRequest($"{PeeringDbBase}/net?asn={entry.Asn}&status=ok");
+                    using var resp = await peeringDbHttp.SendAsync(req, reqCts.Token);
+
+                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
-                        Interlocked.Increment(ref metadataLookupsCompleted);
-                        haveRecord       = true;
-                        foundInPeeringDb = rec.Found;
-                        if (rec.Found && rec.Name != null)
-                            candidate = new ProviderCandidate(
-                                entry.Asn, rec.Name, rec.Country, rec.Website,
-                                rec.InfoType, rec.PeeringCount, null, []);
+                        // Report the error once because parallel requests receive the same 429 response.
+                        if (Interlocked.Exchange(ref rateLimitReported, 1) == 0)
+                            onError?.Invoke(
+                                "PeeringDB rate limit hit (HTTP 429) — enrichment incomplete, try again later.");
+                        return;
                     }
-                }
 
-                if (!haveRecord)
-                {
-                    try
+                    if (!resp.IsSuccessStatusCode) return;
+
+                    var netJson = await resp.Content.ReadAsStringAsync(innerCt);
+                    using var doc = JsonDocument.Parse(netJson);
+                    var arr = doc.RootElement.GetProperty("data");
+                    if (arr.GetArrayLength() > 0)
                     {
-                        using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(innerCt);
-                        reqCts.CancelAfter(TimeSpan.FromSeconds(2));
-                        using var req = PdbRequest($"{PeeringDbBase}/net?asn={entry.Asn}&status=ok");
-                        using var resp = await peeringDbHttp.SendAsync(req, reqCts.Token);
-
-                        if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-                        {
-                            // Report the error once because parallel requests receive the same 429 response.
-                            if (Interlocked.Exchange(ref rateLimitReported, 1) == 0)
-                                onError?.Invoke(
-                                    "PeeringDB rate limit hit (HTTP 429) — enrichment incomplete, try again later.");
-                            return;
-                        }
-
-                        if (!resp.IsSuccessStatusCode) return;
-
-                        var netJson = await resp.Content.ReadAsStringAsync(innerCt);
-                        using var doc = JsonDocument.Parse(netJson);
-                        var arr = doc.RootElement.GetProperty("data");
-                        if (arr.GetArrayLength() > 0)
-                        {
-                            foundInPeeringDb = true;
-                            candidate = ParseNetwork(arr[0], requireInfoType: false);
-                        }
-                        Interlocked.Increment(ref metadataLookupsCompleted);
-                        // Cache only successful lookups, including confirmed missing records.
-                        // errors/timeouts above returned early or fall to catch.
-                        _ripeCache?.Set($"pdb_{entry.Asn}",
-                            SerializePdbNet(candidate, foundInPeeringDb), PeeringDbCacheTtl);
+                        foundInPeeringDb = true;
+                        candidate = ParseNetwork(arr[0], requireInfoType: false);
                     }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                    catch { }
+                    Interlocked.Increment(ref metadataLookupsCompleted);
+                    // Cache only successful lookups, including confirmed missing records.
+                    // errors/timeouts above returned early or fall to catch.
+                    _ripeCache?.Set($"pdb_{entry.Asn}",
+                        SerializePdbNet(candidate, foundInPeeringDb), PeeringDbCacheTtl);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { }
 
                 // Apply request filters to both fresh and cached records.
                 if (candidate != null && !MatchesMetadataFilters(candidate))

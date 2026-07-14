@@ -69,6 +69,59 @@ public class TracerouteAnalyzerTests
         hop.ProxyHint.Should().Be("Akamai");
     }
 
+    [Theory]
+    [InlineData("edge.fastly.net",                    "Fastly")]
+    [InlineData("server-1.ams50.r.cloudfront.net",    "AWS CloudFront")]
+    [InlineData("pop1.edgecast.example",              "Edgecast")]
+    [InlineData("node.incapsula.example",             "Imperva Incapsula")]
+    [InlineData("fw.sucuri.example",                  "Sucuri")]
+    [InlineData("edge.ddos-guard.example",            "DDoS-Guard")]
+    [InlineData("relay.qrator.example",               "Qrator")]
+    [InlineData("edge-cache.cdn77.example",           "CDN")]
+    public async Task Analyze_KnownCdnPtr_ProducesSpecificHint(string ptr, string expectedHint)
+    {
+        var hops = new[] { Hop(1, "192.0.2.10") };
+        var dns = new StubDns(new Dictionary<string, string?> { ["192.0.2.10"] = ptr });
+
+        var result = await TracerouteAnalyzer.AnalyzeAsync(hops, dns);
+
+        var hop = result.Hops.Should().ContainSingle().Subject;
+        hop.Kind.Should().Be(HopKind.ProxyCdn);
+        hop.ProxyHint.Should().Be(expectedHint);
+    }
+
+    private sealed class ThrowingDns(Exception ex) : IDnsResolver
+    {
+        public Task<IReadOnlyList<IPAddress>> ResolveAllIpAsync(string d, CancellationToken ct = default)
+            => Task.FromResult((IReadOnlyList<IPAddress>)Array.Empty<IPAddress>());
+        public Task<string?> ReverseDnsAsync(IPAddress ip, CancellationToken ct = default) => throw ex;
+    }
+
+    [Fact]
+    public async Task Analyze_PtrLookupFails_HopStaysNormalWithoutPtr()
+    {
+        var hops = new[] { Hop(1, "192.0.2.1") };
+
+        var result = await TracerouteAnalyzer.AnalyzeAsync(
+            hops, new ThrowingDns(new InvalidOperationException("dns down")));
+
+        var hop = result.Hops.Should().ContainSingle().Subject;
+        hop.Kind.Should().Be(HopKind.Normal);
+        hop.Ptr.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Analyze_PtrLookupCancelledInternally_CompletesWithoutPtr()
+    {
+        var hops = new[] { Hop(1, "192.0.2.1") };
+
+        // An OCE from inside PTR resolution (internal budget) must not fail the analysis.
+        var result = await TracerouteAnalyzer.AnalyzeAsync(
+            hops, new ThrowingDns(new OperationCanceledException()));
+
+        result.Hops.Should().ContainSingle().Which.Ptr.Should().BeNull();
+    }
+
     [Fact]
     public async Task Analyze_CloudflareIpRange_DetectedWithoutPtr()
     {

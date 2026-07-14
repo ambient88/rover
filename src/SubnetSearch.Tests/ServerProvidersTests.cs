@@ -34,6 +34,16 @@ public class ServerProvidersTests
     }
 
     [Fact]
+    public async Task LoadAsync_CorruptBaseFile_YieldsEmptyCore()
+    {
+        var basePath = Temp("{ not json ]]]");
+        var sp = await ServerProviders.LoadAsync(basePath, basePath + ".missing");
+        File.Delete(basePath);
+
+        sp.IsInCoreAny(24940).Should().BeFalse("an unreadable core file degrades to an empty allowlist");
+    }
+
+    [Fact]
     public async Task LocalOverride_AddsOverridesAndRemoves()
     {
         var basePath = Temp("""

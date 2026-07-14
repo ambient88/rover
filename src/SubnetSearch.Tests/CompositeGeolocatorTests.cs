@@ -12,12 +12,25 @@ public class CompositeGeolocatorTests
     {
         private readonly GeoLocation? _result;
         public bool Called { get; private set; }
+        public bool Disposed { get; private set; }
         public StubGeo(GeoLocation? result) => _result = result;
 
         public GeoLocation? Locate(string ip) { Called = true; return _result; }
         public Task<GeoLocation?> LocateAsync(string ip, CancellationToken ct = default)
         { Called = true; return Task.FromResult(_result); }
-        public void Dispose() { }
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
+    public void Dispose_DisposesBothSources()
+    {
+        var primary  = new StubGeo(null);
+        var fallback = new StubGeo(null);
+
+        new CompositeGeolocator(primary, fallback).Dispose();
+
+        primary.Disposed.Should().BeTrue();
+        fallback.Disposed.Should().BeTrue();
     }
 
     [Fact]

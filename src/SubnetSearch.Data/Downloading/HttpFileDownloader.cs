@@ -9,7 +9,7 @@ namespace SubnetSearch.Data;
 
 public class HttpFileDownloader : IFileDownloader
 {
-    private sealed record PartialDownloadState(string? ETag, string? LastModified);
+    internal sealed record PartialDownloadState(string? ETag, string? LastModified);
 
     private readonly HttpClient _http;
     // Thread-safe map tracking partially downloaded temp files (for resume).
@@ -198,19 +198,29 @@ public class HttpFileDownloader : IFileDownloader
     internal static bool IsValidContentRange(HttpResponseMessage response, long existingLength)
     {
         var range = response.Content.Headers.ContentRange;
-        if (range?.Unit != "bytes" || range.From != existingLength || !range.To.HasValue)
-            return false;
-        if (range.To.Value < existingLength)
-            return false;
-        if (range.Length.HasValue && range.To.Value >= range.Length.Value)
-            return false;
-
-        long expectedBodyLength = range.To.Value - existingLength + 1;
-        return !response.Content.Headers.ContentLength.HasValue ||
-               response.Content.Headers.ContentLength.Value == expectedBodyLength;
+        return IsValidContentRange(
+            range?.Unit, range?.From, range?.To, range?.Length,
+            response.Content.Headers.ContentLength, existingLength);
     }
 
-    private static bool TrySetIfRange(
+    // Pure validation core: .NET's header parser rejects some malformed shapes before
+    // they get here, but the guards must hold for any value combination regardless.
+    internal static bool IsValidContentRange(
+        string? unit, long? from, long? to, long? length,
+        long? contentLength, long existingLength)
+    {
+        if (unit != "bytes" || from != existingLength || !to.HasValue)
+            return false;
+        if (to.Value < existingLength)
+            return false;
+        if (length.HasValue && to.Value >= length.Value)
+            return false;
+
+        long expectedBodyLength = to.Value - existingLength + 1;
+        return !contentLength.HasValue || contentLength.Value == expectedBodyLength;
+    }
+
+    internal static bool TrySetIfRange(
         HttpRequestMessage request, PartialDownloadState state)
     {
         if (EntityTagHeaderValue.TryParse(state.ETag, out var etag))
@@ -228,7 +238,7 @@ public class HttpFileDownloader : IFileDownloader
         return false;
     }
 
-    private async Task<PartialDownloadState?> LoadPartialStateAsync(
+    internal async Task<PartialDownloadState?> LoadPartialStateAsync(
         string url, string path, bool persistent, CancellationToken token)
     {
         if (!persistent)
@@ -247,7 +257,7 @@ public class HttpFileDownloader : IFileDownloader
         }
     }
 
-    private async Task SavePartialStateAsync(
+    internal async Task SavePartialStateAsync(
         string url,
         string path,
         PartialDownloadState state,
@@ -266,7 +276,7 @@ public class HttpFileDownloader : IFileDownloader
         await File.WriteAllTextAsync(path + ".meta", JsonSerializer.Serialize(state), token);
     }
 
-    private void RemovePartialState(string url, string path, bool persistent)
+    internal void RemovePartialState(string url, string path, bool persistent)
     {
         if (!persistent)
         {

@@ -10,20 +10,27 @@ public static class DerivedCachePath
     public const string CacheRootEnvVar = "SUBNETSEARCH_CACHE_DIR";
 
     public static string ForDataDirectory(string dataDirectory, string category)
+        => ForDataDirectory(
+            dataDirectory,
+            category,
+            Environment.GetEnvironmentVariable(CacheRootEnvVar),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    // Pure path resolution, separated from process state so every branch is unit-testable.
+    internal static string ForDataDirectory(
+        string dataDirectory, string category, string? overrideRoot, string localData)
     {
         string source = Path.GetFullPath(dataDirectory);
         string hash = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(source)))[..16];
 
         string root;
-        string? overrideRoot = Environment.GetEnvironmentVariable(CacheRootEnvVar);
         if (!string.IsNullOrWhiteSpace(overrideRoot))
         {
             root = overrideRoot;
         }
         else
         {
-            string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             if (string.IsNullOrWhiteSpace(localData))
                 localData = Path.GetTempPath();
             root = Path.Combine(localData, "SubnetSearch", "cache");

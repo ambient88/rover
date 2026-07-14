@@ -46,4 +46,11 @@ public class IpConverterTests
     [InlineData(134744064u, 134744319u, "8.8.8.0/24")]
     public void ToCidr_FormatsCorrectly(uint start, uint end, string expected)
         => IpConverter.ToCidr(start, end).Should().Be(expected);
+
+    [Theory]
+    [InlineData(1u, 3u, "0.0.0.1-0.0.0.3")]           // size is a power of two but start is unaligned
+    [InlineData(0u, 2u, "0.0.0.0-0.0.0.2")]           // size 3 is not a power of two
+    [InlineData(134744065u, 134744319u, "8.8.8.1-8.8.8.255")]
+    public void ToCidr_FallsBackToRangeForUnalignedInput(uint start, uint end, string expected)
+        => IpConverter.ToCidr(start, end).Should().Be(expected);
 }

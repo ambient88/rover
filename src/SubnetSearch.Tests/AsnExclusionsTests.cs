@@ -124,6 +124,21 @@ public class AsnExclusionsTests
     }
 
     [Fact]
+    public async Task LoadAsync_EmptyJsonObject_ReturnsDefault()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            // All sections absent (null): the file carries no information, so the
+            // built-in defaults apply instead of an all-empty exclusion set.
+            await File.WriteAllTextAsync(path, "{}");
+            var excl = await AsnExclusions.LoadAsync(path);
+            excl.Should().BeSameAs(AsnExclusions.Default);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task LoadAsync_CorruptJson_ReturnsDefaultWithoutThrowing()
     {
         var path = Path.GetTempFileName();

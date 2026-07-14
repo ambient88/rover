@@ -65,4 +65,27 @@ public class ProviderIndexCacheTests : IDisposable
 
         (await new ProviderIndexCache(_dir).LoadAsync()).Should().BeNull();
     }
+
+    [Fact]
+    public async Task Save_CorruptExistingFile_StartsFreshInsteadOfFailing()
+    {
+        await File.WriteAllTextAsync(Path.Combine(_dir, "provider-index-cache.json"), "{ broken");
+        var cache = new ProviderIndexCache(_dir);
+
+        await cache.SaveAsync(Map(("FI", new uint[] { 5 })));
+
+        var loaded = await cache.LoadAsync();
+        loaded.Should().NotBeNull("the unreadable old cache is replaced, not merged");
+        loaded!["FI"].Should().Equal(5u);
+    }
+
+    [Fact]
+    public async Task Save_UnwritableDirectory_IsBestEffortAndDoesNotThrow()
+    {
+        var cache = new ProviderIndexCache(Path.Combine(_dir, "missing-subdir"));
+
+        var act = () => cache.SaveAsync(Map(("FI", new uint[] { 1 })));
+
+        await act.Should().NotThrowAsync("the cache is an optimization, never a hard failure");
+    }
 }

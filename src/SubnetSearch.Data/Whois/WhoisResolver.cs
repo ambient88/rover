@@ -8,6 +8,14 @@ public partial class WhoisResolver : IWhoisResolver
 {
     private const int TimeoutSeconds = 3;
     private readonly ConcurrentDictionary<string, Lazy<Task<WhoisResult?>>> _cache = new();
+    private readonly Func<string, string, CancellationToken, Task<string>> _sendQuery;
+
+    public WhoisResolver() : this(WhoisQuery.SendAsync) { }
+
+    // Internal seam: lets tests stub the raw WHOIS exchange without opening sockets.
+    internal WhoisResolver(Func<string, string, CancellationToken, Task<string>> sendQuery)
+        => _sendQuery = sendQuery;
+
     [GeneratedRegex(@"refer:\s*([\w\.-]+)", RegexOptions.IgnoreCase)]
     private static partial Regex ReferralRegex();
 
@@ -64,11 +72,11 @@ public partial class WhoisResolver : IWhoisResolver
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(TimeoutSeconds));
         try
         {
-            var ianaResponse = await WhoisQuery.SendAsync("whois.iana.org", ipAddress, cts.Token);
+            var ianaResponse = await _sendQuery("whois.iana.org", ipAddress, cts.Token);
             var referral = ReferralRegex().Match(ianaResponse);
             string whoisServer = referral.Success ? referral.Groups[1].Value : "whois.ripe.net";
 
-            var response = await WhoisQuery.SendAsync(whoisServer, ipAddress, cts.Token);
+            var response = await _sendQuery(whoisServer, ipAddress, cts.Token);
 
             return ParseWhoisResponse(whoisServer, response);
         }

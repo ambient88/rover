@@ -128,4 +128,41 @@ public class BgpViewClientTests
             .Invoking(c => c.GetPrefixesAsync(1, cts.Token))
             .Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Fact]
+    public async Task GetPrefixes_CancelledMidRequest_Rethrows()
+    {
+        using var cts = new CancellationTokenSource();
+        // Cancellation surfaces from inside the HTTP call (after the throttle gate),
+        // so the rethrow filter, not the generic failure branch, must handle it.
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var client = new BgpViewClient(new HttpClient(handler), TimeSpan.Zero);
+
+        await client.Invoking(c => c.GetPrefixesAsync(1, cts.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetPrefixes_TooManyRequestsWithRetryAfter_DefersNextRequest()
+    {
+        var handler = TestHttpMessageHandler.Custom(_ =>
+        {
+            var resp = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            resp.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(
+                TimeSpan.FromSeconds(30));
+            return resp;
+        });
+        var client = new BgpViewClient(new HttpClient(handler), TimeSpan.FromMilliseconds(1));
+
+        var (ok, v4, v6) = await client.GetPrefixesAsync(1);
+
+        // The server-requested backoff is honoured internally; the call itself just fails soft.
+        ok.Should().BeFalse();
+        v4.Should().BeEmpty();
+        v6.Should().BeEmpty();
+    }
 }

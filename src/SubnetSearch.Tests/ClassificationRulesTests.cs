@@ -1,5 +1,6 @@
 using FluentAssertions;
 using SubnetSearch.Classification;
+using SubnetSearch.Core.Models.Classification;
 
 namespace SubnetSearch.Tests;
 
@@ -31,6 +32,21 @@ public class ClassificationRulesTests
     [InlineData(null,      false)]
     public void IsHostingPeeringDbType_ReturnsExpected(string? infoType, bool expected)
         => ClassificationRules.IsHostingPeeringDbType(infoType).Should().Be(expected);
+
+    [Theory]
+    [InlineData("Contabo VPS",     HostingType.Vps)]
+    [InlineData("MegaCloud Inc",   HostingType.Cloud)]
+    [InlineData("Hetzner Online",  HostingType.Dedicated)]
+    [InlineData("Plain Widgets",   HostingType.Unknown)] // no keyword matches
+    public void ResolveHostingType_MapsOrganizationKeywords(string org, HostingType expected)
+        => ClassificationRules.ResolveHostingType(org).Should().Be(expected);
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveHostingType_BlankOrg_ReturnsNull(string? org)
+        => ClassificationRules.ResolveHostingType(org).Should().BeNull();
 
     [Theory]
     [InlineData(174u,   true)]   // Cogent

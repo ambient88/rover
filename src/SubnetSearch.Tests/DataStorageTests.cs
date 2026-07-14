@@ -62,6 +62,110 @@ public class DataStorageTests : IDisposable
         }
     }
 
+    private sealed class MutatingChecker : IFileIntegrityChecker
+    {
+        public bool IsValid(string filePath)
+        {
+            // Simulates a concurrent writer touching the file while it is being validated.
+            File.AppendAllText(filePath, "!");
+            return true;
+        }
+    }
+
+    private sealed class FailingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new IOException("stream failed mid-copy");
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void Storage_BlankFileName_Throws()
+    {
+        var storage = new LocalFileStorage(_dir);
+
+        storage.Invoking(s => s.IsFileValid("   ", 0)).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Storage_FileModifiedDuringValidation_IsRejected()
+    {
+        File.WriteAllText(Path.Combine(_dir, "racy.chk"), "valid");
+        var storage = new LocalFileStorage(_dir,
+            new Dictionary<string, IFileIntegrityChecker> { [".chk"] = new MutatingChecker() });
+
+        storage.IsFileValid("racy.chk", 0)
+            .Should().BeFalse("the file changed under the checker, so its verdict cannot be trusted");
+    }
+
+    [Fact]
+    public async Task Storage_Save_FailingSource_CleansTempAndRethrows()
+    {
+        var storage = new LocalFileStorage(_dir);
+
+        var act = () => storage.SaveAsync("broken.bin", new FailingStream());
+
+        await act.Should().ThrowAsync<IOException>();
+        File.Exists(Path.Combine(_dir, "broken.bin.tmp")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Storage_CorruptIntegritySnapshot_FallsBackToFullCheck()
+    {
+        File.WriteAllText(Path.Combine(_dir, "v.chk"), "valid");
+        File.WriteAllText(Path.Combine(_dir, "v.chk.integrity.json"), "{ broken");
+        var checker = new CountingChecker();
+        var storage = new LocalFileStorage(_dir,
+            new Dictionary<string, IFileIntegrityChecker> { [".chk"] = checker });
+
+        storage.IsFileValid("v.chk", 0).Should().BeTrue();
+        checker.Calls.Should().Be(1, "an unreadable snapshot forces one real validation");
+    }
+
+    [Fact]
+    public void Storage_LegacySnapshotFromDifferentChecker_IsIgnored()
+    {
+        string filePath = Path.Combine(_dir, "v.chk");
+        File.WriteAllText(filePath, "valid");
+        var info = new FileInfo(filePath);
+        // Length and timestamp match, but the version belongs to another checker type.
+        File.WriteAllText(filePath + ".integrity.json", JsonSerializer.Serialize(new
+        {
+            Length = info.Length,
+            LastWriteTimeUtcTicks = info.LastWriteTimeUtc.Ticks,
+            CheckerVersion = "Some.Other.Checker:00112233445566778899aabbccddeeff",
+        }));
+        var checker = new CountingChecker();
+        var storage = new LocalFileStorage(_dir,
+            new Dictionary<string, IFileIntegrityChecker> { [".chk"] = checker });
+
+        storage.IsFileValid("v.chk", 0).Should().BeTrue();
+        checker.Calls.Should().Be(1, "a foreign checker's snapshot must not be trusted");
+    }
+
+    [Fact]
+    public async Task Storage_Save_LockedStaleSnapshot_StillSaves()
+    {
+        string snapshotPath = Path.Combine(_dir, "locked.bin.integrity.json");
+        File.WriteAllText(snapshotPath, "{}");
+        // An exclusive handle makes the snapshot delete fail; the save must proceed anyway.
+        using var lockHandle = new FileStream(
+            snapshotPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        var storage = new LocalFileStorage(_dir);
+
+        await storage.SaveAsync("locked.bin", Bytes("payload"));
+
+        File.ReadAllText(Path.Combine(_dir, "locked.bin")).Should().Be("payload");
+    }
+
     // LocalFileStorage tests.
 
     [Fact]
@@ -253,6 +357,18 @@ public class DataStorageTests : IDisposable
         File.WriteAllText(Path.Combine(_dir, "x.bin.meta.json"), "{ not json ]");
 
         new FileMetadataStore(_dir).Load("x.bin").Should().BeNull();
+    }
+
+    [Fact]
+    public void Metadata_Save_UnwritableDirectory_IsBestEffort()
+    {
+        var store = new FileMetadataStore(Path.Combine(_dir, "missing-subdir"));
+
+        // Metadata loss only causes a re-download next run, so a failed save must not throw.
+        var act = () => store.Save("f.bin", new FileMetadata(DateTimeOffset.UtcNow));
+
+        act.Should().NotThrow();
+        store.Load("f.bin").Should().BeNull();
     }
 
     [Fact]

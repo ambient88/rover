@@ -68,4 +68,29 @@ public class DownloadManagerTests : IDisposable
 
         result.Should().ContainSingle(r => !r.Success);
     }
+
+    [Fact]
+    public async Task DownloadAllDetailed_FileBelowMinSize_ReportsCorruption()
+    {
+        var handler = TestHttpMessageHandler.Always(HttpStatusCode.OK, "tiny");
+        // MinSize far above the payload: the post-save validity check must fail.
+        var fd = new FileDescriptor("https://x/f", "small.txt", 1_000, TimeSpan.FromDays(1));
+
+        var result = await Manager(handler, fd).DownloadAllDetailedAsync(
+            new DownloadOptions { MaxRetries = 0, UseResume = false }, force: true);
+
+        result.Should().ContainSingle(r =>
+            !r.Success && r.ErrorMessage == "File is corrupted after download.");
+    }
+
+    [Fact]
+    public async Task DownloadSingleFile_FileBelowMinSize_Throws()
+    {
+        var handler = TestHttpMessageHandler.Always(HttpStatusCode.OK, "tiny");
+        var fd = new FileDescriptor("https://x/f", "small.txt", 1_000, TimeSpan.FromDays(1));
+
+        var act = () => Manager(handler, fd).DownloadSingleFileAsync(fd);
+
+        await act.Should().ThrowAsync<InvalidDataException>();
+    }
 }
