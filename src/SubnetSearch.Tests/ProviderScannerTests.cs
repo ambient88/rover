@@ -47,7 +47,7 @@ public class ProviderScannerTests
         result.AsnHandle.Should().Be("SENKO-AS");
         result.Organization.Should().Be("Senko Digital LLC");
         result.Prefixes.Should().HaveCount(2);
-        // /24 = 256, /25 = 128 → 384
+        // A /24 contains 256 addresses and a /25 contains 128, for a total of 384.
         result.TotalIpCount.Should().Be(384);
     }
 

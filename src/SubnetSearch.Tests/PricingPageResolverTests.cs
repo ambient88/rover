@@ -3,7 +3,7 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// PricingPageResolver: ASN → URL (точное совпадение), затем ключевое слово в имени организации.
+// PricingPageResolver checks an exact ASN before organization name keywords.
 public class PricingPageResolverTests
 {
     [Fact]
@@ -31,10 +31,10 @@ public class PricingPageResolverTests
         => PricingPageResolver.Resolve(999999, "Totally Unknown Provider").Should().BeNull();
 
     [Fact]
-    public void Resolve_NullOrgName_UnknownAsn_ReturnsNull() // краевой случай
+    public void Resolve_NullOrgName_UnknownAsn_ReturnsNull()
         => PricingPageResolver.Resolve(999999, null).Should().BeNull();
 
     [Fact]
-    public void Resolve_WhitespaceOrgName_ReturnsNull() // краевой случай
+    public void Resolve_WhitespaceOrgName_ReturnsNull()
         => PricingPageResolver.Resolve(999999, "   ").Should().BeNull();
 }

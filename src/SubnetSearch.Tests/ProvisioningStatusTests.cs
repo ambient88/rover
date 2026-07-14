@@ -15,7 +15,7 @@ public class ProvisioningStatusTests : IDisposable
     }
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); }
 
-    // Стаб хранилища: считает валидными файлы из заданного множества.
+    // The storage stub treats files from the supplied set as valid.
     private sealed class StubStorage : IFileStorage
     {
         private readonly HashSet<string> _valid;
@@ -26,13 +26,13 @@ public class ProvisioningStatusTests : IDisposable
 
     [Theory]
     // isUpdate, anyFileValid, anyFileInvalid, expected mode
-    [InlineData(true,  true,  true,  ProvisioningMode.Visible)]  // update всегда Visible
-    [InlineData(true,  true,  false, ProvisioningMode.Visible)]  // update даже когда всё свежее
+    [InlineData(true,  true,  true,  ProvisioningMode.Visible)]  // Updates are always visible.
+    [InlineData(true,  true,  false, ProvisioningMode.Visible)]  // Fresh data does not hide an explicit update.
     [InlineData(true,  false, true,  ProvisioningMode.Visible)]
-    [InlineData(false, false, true,  ProvisioningMode.Visible)]  // первый запуск — нет валидных файлов
-    [InlineData(false, false, false, ProvisioningMode.Visible)]  // нет валидных → Visible
-    [InlineData(false, true,  true,  ProvisioningMode.Silent)]   // есть данные + что-то устарело
-    [InlineData(false, true,  false, ProvisioningMode.None)]     // всё свежее — тишина
+    [InlineData(false, false, true,  ProvisioningMode.Visible)]  // First run without valid files.
+    [InlineData(false, false, false, ProvisioningMode.Visible)]  // Missing valid data remains visible.
+    [InlineData(false, true,  true,  ProvisioningMode.Silent)]   // Existing data allows a silent refresh.
+    [InlineData(false, true,  false, ProvisioningMode.None)]     // Fresh data needs no provisioning.
     public void Decide_SelectsMode(bool isUpdate, bool anyFileValid, bool anyFileInvalid, ProvisioningMode expected)
         => ProvisioningStatus.Decide(isUpdate, anyFileValid, anyFileInvalid).Should().Be(expected);
 
@@ -62,13 +62,13 @@ public class ProvisioningStatusTests : IDisposable
     {
         var files = new[] { new FileDescriptor("u", "missing.bin") };
 
-        Make(new StubStorage(/* пусто → файл невалиден */), files).AnyPending().Should().BeTrue();
+        Make(new StubStorage(/* Empty set means every file is invalid. */), files).AnyPending().Should().BeTrue();
     }
 
     [Fact]
     public void AnyPending_ValidDownloadOnceFile_NotPending()
     {
-        // MaxAge=null → download-once: валидный файл больше не требует загрузки.
+        // A null MaxAge gives a valid file download-once behavior.
         var files = new[] { new FileDescriptor("u", "once.bin", MaxAge: null) };
 
         Make(new StubStorage("once.bin"), files).AnyPending().Should().BeFalse();

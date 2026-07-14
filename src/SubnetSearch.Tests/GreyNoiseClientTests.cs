@@ -4,8 +4,8 @@ using SubnetSearch.Network.Reputation;
 
 namespace SubnetSearch.Tests;
 
-// GreyNoise community: GET /v3/community/{ip} → {"classification":"malicious"|"benign"|...}.
-// Клиент берёт до 3 IP и возвращает долю malicious среди ответивших, null если не ответил никто.
+// GreyNoise community returns a classification for each queried IP.
+// The client samples up to three IPs and returns the malicious share among successful responses.
 public class GreyNoiseClientTests
 {
     private static GreyNoiseClient Client(TestHttpMessageHandler h)
@@ -46,7 +46,7 @@ public class GreyNoiseClientTests
     }
 
     [Fact]
-    public async Task GetMaliciousRatio_EmptyInput_ReturnsNull() // краевой случай: пустой список
+    public async Task GetMaliciousRatio_EmptyInput_ReturnsNull()
     {
         var ratio = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, Cls("benign")))
             .GetMaliciousRatioAsync(Array.Empty<string>());
@@ -55,7 +55,7 @@ public class GreyNoiseClientTests
     }
 
     [Fact]
-    public async Task GetMaliciousRatio_AllRequestsFail_ReturnsNull() // краевой случай: никто не ответил
+    public async Task GetMaliciousRatio_AllRequestsFail_ReturnsNull()
     {
         var ratio = await Client(TestHttpMessageHandler.Always(HttpStatusCode.Forbidden, "{}"))
             .GetMaliciousRatioAsync(new[] { "1.1.1.1", "2.2.2.2" });
@@ -66,7 +66,7 @@ public class GreyNoiseClientTests
     [Fact]
     public async Task GetMaliciousRatio_MissingClassification_SkipsEntry()
     {
-        // 1.1.1.1 без поля classification (не учитывается), 2.2.2.2 malicious → total=1, malicious=1.
+        // Ignore 1.1.1.1 without a classification and count 2.2.2.2 as malicious.
         var handler = TestHttpMessageHandler.ByUrl(new Dictionary<string, (HttpStatusCode, string)>
         {
             ["/1.1.1.1"] = (HttpStatusCode.OK, """{"ip":"1.1.1.1"}"""),
@@ -80,7 +80,7 @@ public class GreyNoiseClientTests
     [Fact]
     public async Task GetMaliciousRatio_PartialFailure_CountsOnlyResponders()
     {
-        // 1.1.1.1 → 500 (пропуск), 2.2.2.2 → benign, 3.3.3.3 → malicious. total=2, malicious=1.
+        // Skip the failed first request, then count one benign and one malicious response.
         var handler = TestHttpMessageHandler.ByUrl(new Dictionary<string, (HttpStatusCode, string)>
         {
             ["/1.1.1.1"] = (HttpStatusCode.InternalServerError, "{}"),
@@ -93,7 +93,7 @@ public class GreyNoiseClientTests
     }
 
     [Fact]
-    public async Task GetMaliciousRatio_MalformedJson_SkipsEntry() // краевой случай: битый ответ
+    public async Task GetMaliciousRatio_MalformedJson_SkipsEntry()
     {
         var handler = TestHttpMessageHandler.ByUrl(new Dictionary<string, (HttpStatusCode, string)>
         {
@@ -115,7 +115,7 @@ public class GreyNoiseClientTests
     }
 
     [Fact]
-    public async Task GetMaliciousRatio_Cancellation_Throws() // краевой случай: отмена
+    public async Task GetMaliciousRatio_Cancellation_Throws()
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();

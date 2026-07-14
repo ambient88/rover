@@ -3,11 +3,11 @@ namespace SubnetSearch.Cli;
 public static class DefaultDataPath
 {
     /// <summary>
-    /// Определяет путь к папке данных в зависимости от окружения.
+    /// Determines the data directory path based on the environment.
     /// </summary>
     public static string GetDefaultDataDirectory()
     {
-        // Environment variable override — used by Docker, CI, custom installs.
+        // Docker, CI, and custom installations can override the path with an environment variable.
         var envPath = Environment.GetEnvironmentVariable("SUBNETSEARCH_DATA_DIR");
         if (!string.IsNullOrWhiteSpace(envPath))
             return envPath;
@@ -23,7 +23,7 @@ public static class DefaultDataPath
     }
 
     /// <summary>
-    /// Ищет корень проекта, поднимаясь от исполняемого файла и проверяя наличие .sln или .csproj.
+    /// Finds the project root by walking up from the executable and checking for a .sln or .csproj.
     /// </summary>
     private static string? FindProjectRoot()
 {
@@ -32,7 +32,7 @@ public static class DefaultDataPath
     {
         if (Directory.GetFiles(directory, "*.sln").Length > 0)
         {
-            return directory; // возвращаем директорию с .sln
+            return directory; // return the directory that contains the .sln
         }
         var parent = Directory.GetParent(directory);
         directory = parent?.FullName;

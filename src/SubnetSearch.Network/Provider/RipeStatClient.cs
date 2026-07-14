@@ -29,7 +29,7 @@ public class RipeStatClient
     private record RpkiCacheData(
         [property: JsonPropertyName("r")] double? Ratio);
 
-    // ── ASN info ─────────────────────────────────────────────────────────────
+    // ASN information.
 
     public async Task<AsnOverview?> GetAsnOverviewAsync(uint asn, CancellationToken ct = default)
     {
@@ -45,7 +45,7 @@ public class RipeStatClient
         catch { return null; }
     }
 
-    // ── Country ASN registry ─────────────────────────────────────────────────
+    // Country ASN registry.
 
     // Returns all routed ASNs registered in the given ISO country code (e.g. "FI", "NL").
     // Used by the country-ASN supplement pipeline to find providers outside PeeringDB's top-N.
@@ -64,7 +64,7 @@ public class RipeStatClient
             if (r?.Status != "ok" || r.Data?.Countries == null || r.Data.Countries.Length == 0)
                 return [];
 
-            // Match by resource code — RIPE Stat may return entries in arbitrary order.
+            // Match by resource code because RIPE Stat can return entries in any order.
             var entry = r.Data.Countries.FirstOrDefault(
                 c => string.Equals(c.Resource, countryCode, StringComparison.OrdinalIgnoreCase));
             return entry?.Routed ?? [];
@@ -73,7 +73,7 @@ public class RipeStatClient
         catch { return []; }
     }
 
-    // ── Announced prefixes ────────────────────────────────────────────────────
+    // Announced prefixes.
 
     public async Task<IReadOnlyList<string>> GetPrefixesAsync(uint asn, CancellationToken ct = default)
     {
@@ -81,10 +81,10 @@ public class RipeStatClient
         return ipv4;
     }
 
-    // Returns both IPv4 and IPv6 prefixes in one request — avoids duplicate RIPE Stat calls.
-    // Ok = false означает «источник упал» (HTTP-сбой / не-ok статус / битый ответ) —
-    // вызывающий НЕ должен трактовать пустые списки при Ok = false как авторитетное
-    // «префиксов нет» (WR-01: иначе транзиентный сбой ставит негативный маркер pfx0_).
+    // Returns IPv4 and IPv6 prefixes in one request to avoid duplicate RIPE Stat calls.
+    // Ok = false means "the source failed" (HTTP failure / non-ok status / corrupt response),
+    // the caller must not treat empty lists with Ok set to false as an authoritative
+    // "no prefixes" (WR-01: otherwise a transient failure sets the negative pfx0_ marker).
     public async Task<(bool Ok, IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6)> GetAllPrefixesAsync(
         uint asn, CancellationToken ct = default)
     {
@@ -146,21 +146,21 @@ public class RipeStatClient
         => _cache?.Set($"pfx_{asn}",
             JsonSerializer.Serialize(new PrefixCacheData([.. ipv4], [.. ipv6])));
 
-    // pfx0_{asn}: negative marker — both RIPE Stat and the fallback source returned no IPv4.
+    // pfx0_{asn} marks an ASN with no IPv4 prefixes in RIPE Stat or the fallback source.
     // Lets callers skip the throttled fallback for known-empty ASNs within the cache TTL.
     public bool IsKnownEmpty(uint asn)
         => _cache != null && _cache.TryGet($"pfx0_{asn}", out _);
 
-    // ttl == null → TTL кэша по умолчанию (24ч, подтверждённая пустота);
-    // короткий ttl — для неподтверждённой (источник сбоил), чтобы ASN не долбил
-    // троттленный BGPView каждый прогон, но и не замораживался на сутки (WR-01).
+    // A null TTL uses the default 24 hour cache period for confirmed empty results.
+    // a short ttl is for unconfirmed emptiness (the source failed), so the ASN does not hammer
+    // a throttled BGPView every run, yet is not frozen for a full day (WR-01).
     public void MarkEmpty(uint asn, TimeSpan? ttl = null)
     {
         if (ttl.HasValue) _cache?.Set($"pfx0_{asn}", "1", ttl.Value);
         else              _cache?.Set($"pfx0_{asn}", "1");
     }
 
-    // Returns (UpstreamCount, DownstreamCount) — proxy for connectivity quality.
+    // Upstream and downstream counts provide a proxy for connectivity quality.
     public async Task<(int Upstream, int Downstream)> GetNeighbourCountsAsync(
         uint asn, CancellationToken ct = default)
     {
@@ -205,7 +205,7 @@ public class RipeStatClient
         }
     }
 
-    // ── Upstream neighbours (type = "left") ───────────────────────────────────
+    // Upstream neighbors with type "left".
 
     public async Task<IReadOnlyList<uint>> GetUpstreamAsnsAsync(uint asn, CancellationToken ct = default)
     {
@@ -227,7 +227,7 @@ public class RipeStatClient
         catch { return []; }
     }
 
-    // ── Bulk holder lookup for upstream ASNs ──────────────────────────────────
+    // Bulk holder lookup for upstream ASNs.
 
     public async Task<IReadOnlyList<ProviderUpstream>> GetUpstreamsAsync(
         IEnumerable<uint> asns, CancellationToken ct = default)
@@ -243,7 +243,7 @@ public class RipeStatClient
         return [.. results];
     }
 
-    // ── Search by name ────────────────────────────────────────────────────────
+    // Search by name.
 
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(string query, CancellationToken ct = default)
     {
@@ -276,7 +276,7 @@ public class RipeStatClient
         catch { return []; }
     }
 
-    // ── Public types ──────────────────────────────────────────────────────────
+    // Public types.
 
     public record AsnOverview(
         [property: JsonPropertyName("holder")]    string? Holder,
@@ -284,7 +284,7 @@ public class RipeStatClient
 
     public record SearchResult(uint Asn, string? Description);
 
-    // ── RPKI validity ratio ───────────────────────────────────────────────────
+    // RPKI validity ratio.
 
     internal static readonly TimeSpan RpkiAuthoritativeTtl = TimeSpan.FromDays(7);
     private const string RpkiKeyPrefix = "rpki_";
@@ -348,9 +348,9 @@ public class RipeStatClient
     internal static string BuildRpkiCacheKey(uint asn, IEnumerable<string> prefixes)
         => $"{RpkiKeyPrefix}{asn}";
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // Helper methods.
 
-    // Numeric sort key for CIDR strings — prevents lex order ("100.x" < "5.x") from
+    // A numeric CIDR sort key avoids incorrect lexical ordering such as "100.x" before "5.x".
     // causing ProviderScorer to probe unresponsive network addresses as anchor IPs.
     private static uint CidrToSortKey(string cidr)
     {
@@ -361,7 +361,7 @@ public class RipeStatClient
         return (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
     }
 
-    // ── Private JSON models ───────────────────────────────────────────────────
+    // Private JSON models.
 
     private record AsnOverviewResponse(
         [property: JsonPropertyName("status")] string?     Status,

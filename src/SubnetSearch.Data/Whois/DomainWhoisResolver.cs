@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Data;
 
-// WHOIS-over-TCP resolver (live socket to the registry, then inline field extraction) —
+// Resolves WHOIS over a live TCP connection to the registry and extracts fields from the response.
 // integration-tested only; the registrar/date/nameserver regexes mirror the unit-tested
 // WhoisResolver.ParseWhoisResponse patterns.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]

@@ -8,7 +8,7 @@ public static class CloudflareProductDetector
     // Ranges marked "Ambiguous" require HTTP probing to distinguish WARP from Tunnel.
     private static readonly (uint Start, uint End, string Product)[] IpRanges =
     [
-        // WARP / Tunnel — same ranges used for both; HTTP response disambiguates.
+        // WARP and Tunnel share ranges, so the HTTP response distinguishes them.
         Parse("188.114.96.0/22",  "Ambiguous"),
         Parse("185.235.81.0/24",  "Ambiguous"),
 
@@ -16,7 +16,7 @@ public static class CloudflareProductDetector
         Parse("198.41.200.0/24",  "Cloudflare Tunnel"),
         Parse("198.41.201.0/24",  "Cloudflare Tunnel"),
 
-        // Workers / Pages — serverless and static site platform.
+        // Workers and Pages provide serverless and static site hosting.
         Parse("104.18.0.0/16",    "Cloudflare Workers/Pages"),
         Parse("104.19.0.0/16",    "Cloudflare Workers/Pages"),
     ];
@@ -55,10 +55,10 @@ public static class CloudflareProductDetector
     //
     // Priority: header signals > UDP 2408 probe > HTTP response > IP range
     //
-    //   udp2408Closed = true  → port 2408 UDP unreachable → NOT a WARP endpoint
-    //   udp2408Closed = false → no ICMP unreachable       → likely WARP endpoint
-    //   httpResponded = true  → TCP 443/80 serving content → Tunnel
-    //   httpResponded = false → no HTTP                    → fallback to UDP signal
+    // A closed UDP port 2408 rules out a WARP endpoint.
+    // No ICMP unreachable response makes a WARP endpoint likely.
+    // Content on TCP port 443 or 80 identifies Tunnel.
+    // Without an HTTP response, the UDP signal decides the result.
     public static string? Resolve(
         string? detectedCdnProvider,
         string ipAddress,
@@ -78,19 +78,19 @@ public static class CloudflareProductDetector
 
         if (fromIp == "Ambiguous")
         {
-            // UDP 2408 closed → definitely not WARP; combine with HTTP to confirm Tunnel.
+            // A closed UDP port 2408 rules out WARP. Use HTTP to confirm Tunnel.
             if (udp2408Closed == true)
                 return httpResponded == true ? "Cloudflare Tunnel" : "Cloudflare CDN";
 
-            // UDP 2408 open (no ICMP) → WARP endpoint, unless HTTP also responds.
+            // An open UDP port 2408 indicates WARP unless HTTP also responds.
             if (udp2408Closed == false)
             {
                 if (httpResponded == true)
-                    return "Cloudflare Tunnel"; // Both HTTP and UDP 2408 open → Tunnel with WARP co-located
+                    return "Cloudflare Tunnel"; // HTTP with UDP port 2408 identifies Tunnel with colocated WARP.
                 return "Cloudflare WARP";
             }
 
-            // UDP unknown — fall back to HTTP signal only.
+            // Use only the HTTP signal when the UDP result is unknown.
             return httpResponded switch
             {
                 true  => "Cloudflare Tunnel",

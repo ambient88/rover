@@ -81,7 +81,7 @@ public class RipeStatCache
 
     public async Task FlushIfDirtyAsync()
     {
-        // Atomically claim the dirty flag (1 → 0); restored below if the write fails.
+        // Clear the dirty flag atomically and restore it below if the write fails.
         if (Interlocked.CompareExchange(ref _dirty, 0, 1) == 0) return;
         try
         {
@@ -94,9 +94,9 @@ public class RipeStatCache
             var dict = _store
                 .Where(kv => kv.Value.ExpiresAt > now)
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
-            // WR-09: атомарная запись через временный файл — обрыв процесса (Ctrl+C,
-            // kill) посреди записи не должен оставлять усечённый JSON и молча
-            // уничтожать весь накопленный кэш при следующей загрузке.
+            // WR-09: atomic write through a temp file. A process abort (Ctrl+C,
+            // kill) mid-write must not leave truncated JSON and silently
+            // destroy the whole accumulated cache on the next load.
             var tmp = _path + ".tmp";
             await using (var stream = new FileStream(
                 tmp, FileMode.Create, FileAccess.Write, FileShare.None,
@@ -108,9 +108,9 @@ public class RipeStatCache
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            // Write failed — restore dirty flag so the next call retries.
+            // Restore the dirty flag after a write failure so the next call retries.
             Interlocked.Exchange(ref _dirty, 1);
-            // Write failures are non-fatal — cache is optional.
+            // Write failures are not fatal because the cache is optional.
             _ = ex;
         }
     }

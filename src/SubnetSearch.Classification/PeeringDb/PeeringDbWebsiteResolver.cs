@@ -38,7 +38,7 @@ public class PeeringDbWebsiteResolver
 
         try
         {
-            // Diagnostic request timeout — 10 seconds.
+            // Diagnostic requests have a 10 second timeout.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, cancellationToken);
             

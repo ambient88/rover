@@ -3,8 +3,7 @@ using SubnetSearch.Classification;
 
 namespace SubnetSearch.Tests;
 
-// InMemoryCache: GetOrAdd с TTL, ленивая фабрика вызывается один раз на живой ключ,
-// истёкшая запись пересоздаётся; Remove/Clear сбрасывают кэш.
+// InMemoryCache runs a lazy factory once for a live key, recreates expired entries, and supports removal and clearing.
 public class InMemoryCacheTests
 {
     [Fact]
@@ -37,7 +36,7 @@ public class InMemoryCacheTests
         string Factory() { calls++; return $"v{calls}"; }
 
         cache.GetOrAdd("k", Factory, ttl: TimeSpan.Zero);
-        Thread.Sleep(15); // запись истекла
+        Thread.Sleep(15); // Allow the entry to expire.
         var second = cache.GetOrAdd("k", Factory, ttl: TimeSpan.FromHours(1));
 
         calls.Should().Be(2);
@@ -73,7 +72,7 @@ public class InMemoryCacheTests
     }
 
     [Fact]
-    public void GetOrAdd_NullFactoryResult_IsCached() // краевой случай: фабрика вернула null
+    public void GetOrAdd_NullFactoryResult_IsCached()
     {
         using var cache = new InMemoryCache(TimeSpan.FromHours(1));
         int calls = 0;

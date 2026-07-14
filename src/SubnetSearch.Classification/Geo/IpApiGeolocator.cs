@@ -6,15 +6,15 @@ namespace SubnetSearch.Classification;
 
 // Fallback geolocator using ip-api.com (free, no key, city-level).
 // Only called when the primary DB-IP source returns no city or coordinates.
-// Thin HTTP geolocation adapter (live ip-api.com requests) — integration-tested only.
+// Thin geolocation adapter for live ip-api.com requests. This requires integration testing.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class IpApiGeolocator : IGeolocator
 {
-    // Shared across all instances — lives for the process lifetime to avoid socket exhaustion.
+    // One client is shared for the process lifetime to avoid socket exhaustion.
     // ip-api.com free tier does not support HTTPS, so no TLS config needed.
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
 
-    // Synchronous path not supported — use LocateAsync.
+    // Synchronous lookup is not supported. Use LocateAsync instead.
     public GeoLocation? Locate(string ipAddress) => null;
 
     public async Task<GeoLocation?> LocateAsync(string ipAddress, CancellationToken ct = default)

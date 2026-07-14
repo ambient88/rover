@@ -3,10 +3,9 @@ using SubnetSearch.Classification;
 
 namespace SubnetSearch.Tests;
 
-// Офлайн-покрытие LoadTagWithNamesAsync (TAX-01, D-06): парсинг asn → имя из vpsh.csv,
-// нужен для vpsh-supplement (эталон PLAY2GO AS215439). Формат строки: "AS215439,PLAY2GO LTD" —
-// ASN до первой запятой, имя — весь остаток (включая внутренние запятые). Мягкая деградация:
-// отсутствующий/повреждённый файл → пустой словарь, LoadTagAsync на том же файле не ломается.
+// Covers offline parsing of ASN and organization names from vpsh.csv for local supplements.
+// The ASN appears before the first comma and the full remaining text becomes the name.
+// A missing or malformed file returns an empty dictionary without breaking LoadTagAsync.
 public class BgpToolsTagLoaderTests
 {
     [Fact]
@@ -96,7 +95,7 @@ public class BgpToolsTagLoaderTests
     }
 
     [Fact]
-    public async Task LoadTagAsync_SameFile_StillReturnsAsnSet() // регресс: LoadTagAsync не сломан
+    public async Task LoadTagAsync_SameFile_StillReturnsAsnSet()
     {
         var path = Path.GetTempFileName();
         try
@@ -132,7 +131,7 @@ public class BgpToolsTagLoaderTests
         Directory.CreateDirectory(dir);
         try
         {
-            // Один тег имеет файл, остальные отсутствуют → пустые множества, без исключений.
+            // Missing tag files produce empty sets without throwing.
             await File.WriteAllTextAsync(Path.Combine(dir, "bgptools-vpsh.csv"), "AS215439,PLAY2GO");
             var all = await BgpToolsTagLoader.LoadAllAsync(dir);
 

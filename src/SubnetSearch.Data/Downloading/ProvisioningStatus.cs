@@ -3,7 +3,7 @@ using SubnetSearch.Core.Models.Data;
 
 namespace SubnetSearch.Data;
 
-/// <summary>Режим провижининга данных на текущем запуске.</summary>
+/// <summary>Data provisioning mode for the current run.</summary>
 public enum ProvisioningMode
 {
     None,     // Valid local data starts immediately.
@@ -28,30 +28,30 @@ public sealed class ProvisioningStatus
         _meta    = meta;
     }
 
-    /// <summary>Есть ли хотя бы один валидный локальный файл (иначе — первый запуск).</summary>
+    /// <summary>Whether at least one valid local file exists (otherwise it is a first run).</summary>
     public bool AnyFileValid() => _files.Any(f => _storage.IsFileValid(f.FileName, f.MinSize));
 
     public bool AnyFileInvalid() => _files.Any(f => !_storage.IsFileValid(f.FileName, f.MinSize));
 
-    /// <summary>Есть ли файлы, которые нужно скачать (отсутствуют/битые ИЛИ TTL истёк).</summary>
+    /// <summary>Whether any files need downloading (missing/corrupt OR the TTL has expired).</summary>
     public bool AnyPending() => _files.Any(IsPending);
 
     private bool IsPending(FileDescriptor f)
     {
-        if (!_storage.IsFileValid(f.FileName, f.MinSize)) return true; // отсутствует/битый
+        if (!_storage.IsFileValid(f.FileName, f.MinSize)) return true; // missing or corrupt
         if (f.MaxAge is null) return false;                            // download-once
-        return _meta.IsStale(f.FileName, f.MaxAge.Value);              // TTL истёк
+        return _meta.IsStale(f.FileName, f.MaxAge.Value);              // TTL expired
     }
 
     /// <summary>
-    /// Чистое правило выбора режима (без диска/сети — тестируется изолированно):
+    /// A pure mode-selection rule (no disk or network, tested in isolation):
     /// Explicit update or first install uses Visible mode.
     /// A partial installation uses Silent mode. Valid local data uses None.
     /// </summary>
     public static ProvisioningMode Decide(bool isUpdateCommand, bool anyFileValid, bool anyFileInvalid)
     {
         if (isUpdateCommand) return ProvisioningMode.Visible;
-        if (!anyFileValid)   return ProvisioningMode.Visible; // первый запуск
+        if (!anyFileValid)   return ProvisioningMode.Visible; // first run
         if (anyFileInvalid)  return ProvisioningMode.Silent;
         return ProvisioningMode.None;
     }

@@ -3,14 +3,14 @@ using SubnetSearch.Network.Http;
 
 namespace SubnetSearch.Tests;
 
-// CloudflareProductDetector: определение продукта CF по диапазонам IP, заголовкам и
-// комбинации UDP/HTTP-сигналов (WARP vs Tunnel vs CDN).
+// CloudflareProductDetector identifies WARP, Tunnel, and CDN products through IP ranges,
+// response headers, and combined UDP and HTTP signals.
 public class CloudflareProductDetectorTests
 {
     private static KeyValuePair<string, IEnumerable<string>>[] Headers(params (string, string)[] hs)
         => hs.Select(h => new KeyValuePair<string, IEnumerable<string>>(h.Item1, new[] { h.Item2 })).ToArray();
 
-    // ── DetectFromIp ──
+    // DetectFromIp tests.
 
     [Theory]
     [InlineData("104.18.5.5",   "Cloudflare Workers/Pages")]
@@ -25,10 +25,10 @@ public class CloudflareProductDetectorTests
         => CloudflareProductDetector.DetectFromIp("8.8.8.8").Should().BeNull();
 
     [Fact]
-    public void DetectFromIp_InvalidIp_ReturnsNull() // краевой случай: не IP
+    public void DetectFromIp_InvalidIp_ReturnsNull()
         => CloudflareProductDetector.DetectFromIp("not-an-ip").Should().BeNull();
 
-    // ── DetectFromHeaders ──
+    // DetectFromHeaders tests.
 
     [Fact]
     public void DetectFromHeaders_CfWorker_ReturnsWorkers()
@@ -51,7 +51,7 @@ public class CloudflareProductDetectorTests
         => CloudflareProductDetector.DetectFromHeaders(Headers(("Server", "nginx")))
             .Should().BeNull();
 
-    // ── Resolve: приоритеты сигналов ──
+    // Signal priority in Resolve.
 
     [Fact]
     public void Resolve_NotCloudflare_ReturnsNull()

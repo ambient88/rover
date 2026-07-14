@@ -4,5 +4,5 @@ public record PingStats(
     double MinMs,
     double AvgMs,
     double MaxMs,
-    int PacketLoss  // процент потерь 0-100
+    int PacketLoss  // packet loss percentage 0-100
 );

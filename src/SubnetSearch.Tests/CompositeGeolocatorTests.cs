@@ -5,8 +5,7 @@ using SubnetSearch.Core.Models.Classification;
 
 namespace SubnetSearch.Tests;
 
-// CompositeGeolocator: пробует primary; если результат неполный (нет города и координат) —
-// добирает недостающие поля из fallback.
+// CompositeGeolocator uses the fallback source to fill fields missing from the primary result.
 public class CompositeGeolocatorTests
 {
     private sealed class StubGeo : IGeolocator
@@ -50,7 +49,7 @@ public class CompositeGeolocatorTests
     [Fact]
     public async Task LocateAsync_PrimaryIncomplete_MergesFallback()
     {
-        // primary без города/координат (только страна) → добираем город и координаты из fallback.
+        // A country-only primary result receives city and coordinate data from the fallback.
         var primary  = new StubGeo(new GeoLocation(null, null, null, null, Country: "DE"));
         var fallback = new StubGeo(new GeoLocation("Munich", "BY", 48.1, 11.6, Country: "XX"));
         var composite = new CompositeGeolocator(primary, fallback);
@@ -73,7 +72,7 @@ public class CompositeGeolocatorTests
     }
 
     [Fact]
-    public async Task LocateAsync_BothNull_ReturnsNull() // краевой случай: никто не знает IP
+    public async Task LocateAsync_BothNull_ReturnsNull()
     {
         var composite = new CompositeGeolocator(new StubGeo(null), new StubGeo(null));
 

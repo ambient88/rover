@@ -23,7 +23,7 @@ public class ClassificationRulesTests
     [InlineData("HOSTING", true)]
     [InlineData("content", true)]
     [InlineData("Content", true)]
-    [InlineData("nsp",     false)]   // ISP/transit — не хостинг
+    [InlineData("nsp",     false)]   // ISP and transit networks are not hosting.
     [InlineData("NSP",     false)]
     [InlineData("isp",     false)]
     [InlineData("ixp",     false)]
@@ -38,8 +38,8 @@ public class ClassificationRulesTests
     [InlineData(1299u,  true)]   // Arelion
     [InlineData(2914u,  true)]   // NTT
     [InlineData(3356u,  true)]   // Lumen
-    [InlineData(13335u, false)]  // Cloudflare — not backbone
-    [InlineData(24940u, false)]  // Hetzner — not backbone
+    [InlineData(13335u, false)]  // Cloudflare is not a backbone provider.
+    [InlineData(24940u, false)]  // Hetzner is not a backbone provider.
     [InlineData(0u,     false)]
     public void BackboneAsns_ContainsExpectedProviders(uint asn, bool shouldBeBackbone)
         => ClassificationRules.BackboneAsns.Contains(asn).Should().Be(shouldBeBackbone);
@@ -58,7 +58,7 @@ public class ClassificationRulesTests
         => ClassificationRules.IsRouterPtr(ptr).Should().Be(expected);
 
     [Theory]
-    [InlineData("Hetzner Online GmbH", false)]  // known hosting — not NonHosting
+    [InlineData("Hetzner Online GmbH", false)]  // Known hosting is not NonHosting.
     [InlineData("OVH SAS",             false)]
     public void IsNonHostingOrg_ReturnsFalseForHostingOrgs(string org, bool expected)
         => ClassificationRules.IsNonHostingOrg(org).Should().Be(expected);
@@ -72,9 +72,9 @@ public class ClassificationRulesTests
     [InlineData("droplet.example.com.",            true)]   // DigitalOcean
     [InlineData("s263723.love-is.nexus.",          true)]   // H2NEXUS server ID
     [InlineData("s1234.hoster.net.",               true)]   // 4-digit server ID
-    [InlineData("s12.example.com.",                false)]  // 2 digits — too short, ambiguous
-    [InlineData("s1.example.com.",                 false)]  // 1 digit — too short, ambiguous
-    [InlineData("ae2.cr6-cph1.ip4.gtt.net.",       false)]  // router — should not upgrade
+    [InlineData("s12.example.com.",                false)]  // Two digits are too ambiguous.
+    [InlineData("s1.example.com.",                 false)]  // One digit is too ambiguous.
+    [InlineData("ae2.cr6-cph1.ip4.gtt.net.",       false)]  // Router names must not upgrade the result.
     [InlineData("192-168-1-1.isp.example.com.",    false)]  // residential-style reverse DNS
     [InlineData(null,                              false)]
     public void ResolveHostingTypeFromPtr_DetectsHostingPatterns(string? ptr, bool shouldDetect)

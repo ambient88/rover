@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Network;
 
-// ICMP ping diagnostics over live sockets / OS ping — integration/manual-tested only.
+// Runs ICMP diagnostics through live sockets or the operating system ping command.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class PingService : IPingService
 {
@@ -27,16 +27,16 @@ public partial class PingService : IPingService
     [GeneratedRegex(@"\((\d+)%\s+loss\)", RegexOptions.IgnoreCase)]
     private static partial Regex WindowsLossRegex();
 
-    // WR-07: языконезависимый фолбэк для локализованного ping.exe (русская Windows:
-    // «Минимальное = 24мсек, Максимальное = 27мсек, Среднее = 25мсек»). Порядок
-    // min, max, avg одинаков на всех локалях — это один формат-стринг ping.exe.
-    // Якорь «число сразу с буквенным суффиксом единицы» не матчит строку статистики
-    // пакетов («отправлено = 4, получено = 4») — там после числа нет букв.
+    // WR-07: a language-independent fallback for a localized ping.exe. Localized builds
+    // (for example Russian Windows) translate the min/max/avg labels, but the order
+    // of min, max, avg is identical across locales, since it is one ping.exe format string.
+    // The "number immediately followed by a unit letter" anchor does not match the packet
+    // statistics line (localized "sent = 4, received = 4"), where no letters follow the number.
     [GeneratedRegex(@"=\s*(\d+)\s*\p{L}+[,;]\s*\p{L}+\s*=\s*(\d+)\s*\p{L}+[,;]\s*\p{L}+\s*=\s*(\d+)\s*\p{L}+")]
     private static partial Regex WindowsRttGenericRegex();
 
-    // WR-07: фолбэк потерь — единственный процент в скобках в выводе ping.exe
-    // это packet loss: «(25% loss)» / «(25% потерь)».
+    // WR-07: the loss fallback is the only parenthesized percentage in ping.exe output,
+    // which is the packet loss, e.g. "(25% loss)" or its localized equivalent.
     [GeneratedRegex(@"\((\d+)%[^)]*\)")]
     private static partial Regex WindowsLossGenericRegex();
 
@@ -59,7 +59,7 @@ public partial class PingService : IPingService
 
     // Both branches bind ICMP to the physical interface, bypassing VPN routing:
     //   Windows: -S <source IP>. Without it some VPN clients short-circuit ICMP with
-    //   fake replies (<1ms, TTL=128) for ANY destination — proven 2026-07-04
+    //   fake replies under 1 ms with TTL 128 for any destination, confirmed on 2026-07-04.
     //   (8.8.8.8 via VPN route = 0ms/TTL 128; via -S physical = 25ms/TTL 110),
     //   which poisons all latency scoring in -r.
     //   Linux/macOS: -I <iface> (same bypass, pre-existing behavior).
@@ -76,8 +76,8 @@ public partial class PingService : IPingService
         return $"-c {count} -W 1 {ifaceArg}{host}";
     }
 
-    // internal static + явный isWindows: разбор проверяется офлайн-тестами на образцах
-    // вывода разных локалей (WR-07), по аналогии с BuildPingArguments.
+    // internal static plus an explicit isWindows: parsing is checked by offline tests on samples
+    // of output from various locales (WR-07), mirroring BuildPingArguments.
     internal static PingStats? Parse(string output, bool isWindows)
     {
         if (string.IsNullOrWhiteSpace(output)) return null;
@@ -85,9 +85,9 @@ public partial class PingService : IPingService
         int loss = 0;
         if (isWindows)
         {
-            // WR-07: сначала английский регекс, затем языконезависимый фолбэк —
-            // на локализованной Windows «Minimum = ...» не встречается, и до фикса
-            // каждый хост считался silent (и кэшировался как silent на 12 часов).
+            // WR-07: try the English regex first, then the language-independent fallback.
+            // On localized Windows "Minimum = ..." never appears, and before the fix
+            // every host was treated as silent (and cached as silent for 12 hours).
             var lossMatch = WindowsLossRegex().Match(output);
             if (!lossMatch.Success) lossMatch = WindowsLossGenericRegex().Match(output);
             if (lossMatch.Success) loss = int.Parse(lossMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
@@ -126,13 +126,13 @@ public partial class PingService : IPingService
             UseShellExecute        = false,
             CreateNoWindow         = true,
         };
-        // WR-03: Process.Start возвращает null, если процесс не удалось запустить —
-        // пустой вывод трактуется вызывающим как «нет данных» (Parse вернёт null).
+        // WR-03: Process.Start returns null if the process could not be started,
+        // the empty output is treated by the caller as "no data" (Parse returns null).
         using var process = Process.Start(psi);
         if (process == null) return string.Empty;
         try
         {
-            // Read stdout and stderr concurrently — if only stdout is read and stderr fills
+            // Read stdout and stderr concurrently because a full stderr buffer can block the process.
             // the OS pipe buffer, the child process blocks and WaitForExitAsync hangs forever.
             var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
             var stderrTask = process.StandardError.ReadToEndAsync(ct);
@@ -143,8 +143,8 @@ public partial class PingService : IPingService
         }
         catch (OperationCanceledException)
         {
-            // WR-03: процесс мог уже завершиться сам — Kill бросил бы
-            // InvalidOperationException и замаскировал бы исходную отмену.
+            // WR-03: the process may already have exited on its own, so Kill would throw
+            // InvalidOperationException and mask the original cancellation.
             try { process.Kill(entireProcessTree: true); }
             catch (InvalidOperationException) { }
             throw;

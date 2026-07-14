@@ -4,10 +4,8 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Двухмаршрутная загрузка --from (диагностика 2026-07-08): основной клиент bypass-VPN
-// (привязан к физическому интерфейсу) упирается в блокировку хоста провайдером
-// (raw.githubusercontent.com — SYN blackhole → «The SSL connection could not be
-// established»); фолбэк идёт системным маршрутом (VPN, если активен).
+// The --from loader races a physical-interface route against the system route.
+// This handles hosts blocked on the direct connection while still supporting an active VPN.
 public class IpListAnalyzerTests
 {
     private sealed class ChunkedReader(string text, int chunkSize) : TextReader
@@ -52,7 +50,7 @@ public class IpListAnalyzerTests
         }
     }
 
-    // Стаб-обработчик: отдаёт заготовленный ответ либо бросает сетевую ошибку.
+    // The handler returns a prepared response or throws a network error.
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
         : HttpMessageHandler
     {
@@ -125,7 +123,7 @@ public class IpListAnalyzerTests
     [Fact]
     public async Task ReadSourceAsync_NoFallback_PropagatesPrimaryError()
     {
-        // Обратная совместимость: без fallbackHttp поведение прежнее — одна попытка.
+        // Without fallbackHttp, the loader keeps the original single-attempt behavior.
         var (primary, ph) = FailingClient();
 
         var act = () => IpListAnalyzer.ReadSourceAsync(
@@ -138,7 +136,7 @@ public class IpListAnalyzerTests
     [Fact]
     public async Task ReadSourceAsync_UserCancellation_DoesNotRetryViaFallback()
     {
-        // Ctrl+C — не сетевой сбой: отмена пробрасывается, фолбэк не пробуется.
+        // Ctrl+C propagates cancellation without trying the fallback route.
         var (primary, _)   = FailingClient();
         var (fallback, fh) = OkClient("не должен использоваться");
         using var cts = new CancellationTokenSource();
@@ -154,7 +152,7 @@ public class IpListAnalyzerTests
     [Fact]
     public async Task ReadSourceAsync_DirectIpUrl_BlockedBeforeAnyRequest()
     {
-        // SSRF-защита срабатывает до сети — ни один маршрут не дёргается.
+        // SSRF validation rejects the URL before either network route starts.
         var (primary, ph)  = OkClient("x");
         var (fallback, fh) = OkClient("x");
 
@@ -193,7 +191,7 @@ public class IpListAnalyzerTests
     [Fact]
     public async Task ReadSourceAsync_GitHubBlobUrl_RewrittenForBothRoutes()
     {
-        // Переписанный raw-URL используется и фолбэком — не исходный blob-URL.
+        // The fallback uses the rewritten raw URL instead of the original blob URL.
         var (primary, _)   = FailingClient();
         var (fallback, fh) = OkClient("9.9.9.9");
 

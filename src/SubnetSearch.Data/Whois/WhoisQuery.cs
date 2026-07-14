@@ -12,7 +12,7 @@ internal static class WhoisQuery
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(3);
     internal const int MaxResponseChars = 1_048_576;
 
-    // Raw WHOIS-over-TCP socket exchange — pure network I/O. The response parsing/size-limit logic
+    // Raw WHOIS over TCP uses direct network I/O. Response parsing and size limits
     // in ReadResponseAsync is unit-tested; this socket dance is integration-scope.
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public static async Task<string> SendAsync(string server, string query, CancellationToken cancellationToken)

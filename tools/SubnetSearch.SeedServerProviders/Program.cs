@@ -2,11 +2,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using SubnetSearch.Classification;
 
-// Генератор курируемого ядра server-providers.json из локальных данных (ноль сети):
-//   base = bgp.tools vpsh-тег, отфильтрованный от карьеров/CDN/AI (ServerCoreBootstrap.PassesPrune),
-//          тип по умолчанию ["vps","dedicated"];
-//   overlay = data/server-providers.curated.json (ручной: cloud-типы, коррекции, add / []-remove).
-// Выход: data/server-providers.json (перезапись). Коммитит пользователь.
+// Builds the curated server-providers.json core from local data without network access.
+// The base set comes from the bgp.tools vpsh tag after carrier, CDN, and AI filtering.
+// Base entries use the vps and dedicated types by default.
+// data/server-providers.curated.json supplies manual cloud types, corrections, additions, and removals.
+// The generated data/server-providers.json file replaces the previous output.
 //
 // Usage: dotnet run --project tools/SubnetSearch.SeedServerProviders -- [dataDir]
 

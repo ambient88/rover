@@ -26,7 +26,7 @@ public class AsnExclusions
         CloudOnlyAsns       = cloudOnly;
     }
 
-    // Built-in defaults — active on first run before the file is downloaded.
+    // Built-in defaults apply on the first run before the file is downloaded.
     public static readonly AsnExclusions Default = new(
         new HashSet<uint> { 714, 2906, 32934, 10310, 6507, 14340, 19679, 62955, 26415, 17685, 203724, 39832,
                             57976, 6939, 8220, 15830, 35280, 36692, 24429, 30103, 9009 },
@@ -52,7 +52,7 @@ public class AsnExclusions
             var cloudOnly     = new HashSet<uint>(doc.CloudOnly?.Select(e => e.Asn) ?? []);
 
             // Fall back only when ALL sections are missing from the file (null, not empty).
-            // A valid file with only dedicatedOnly/cloudOnly populated must NOT fall back to Default.
+            // A valid file with one populated section must not inherit unrelated defaults.
             if (doc.NonHosting == null && doc.KnownCdns == null && doc.KnownAiProviders == null &&
                 doc.DedicatedOnly == null && doc.CloudOnly == null)
                 return Default;

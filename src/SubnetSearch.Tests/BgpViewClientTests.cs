@@ -4,8 +4,8 @@ using SubnetSearch.Network.Http;
 
 namespace SubnetSearch.Tests;
 
-// BgpViewClient: разбор префиксов ASN из api.bgpview.io. Ok=false означает «источник упал»
-// (HTTP-сбой/битый ответ) — пустые списки при этом не являются авторитетным «префиксов нет».
+// BgpViewClient parses ASN prefixes from api.bgpview.io. Ok=false indicates an HTTP or parsing failure,
+// so an empty list is not treated as authoritative proof that no prefixes exist.
 public class BgpViewClientTests
 {
     private static BgpViewClient Client(TestHttpMessageHandler h) => new(new HttpClient(h));
@@ -40,7 +40,7 @@ public class BgpViewClientTests
     }
 
     [Fact]
-    public async Task GetPrefixes_NonSuccess_ReturnsNotOk() // краевой случай: 5xx
+    public async Task GetPrefixes_NonSuccess_ReturnsNotOk()
     {
         var (ok, v4, v6) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.ServiceUnavailable, "{}"))
             .GetPrefixesAsync(1);
@@ -99,7 +99,7 @@ public class BgpViewClientTests
     }
 
     [Fact]
-    public async Task GetPrefixes_MalformedJson_ReturnsNotOk() // краевой случай: битый ответ
+    public async Task GetPrefixes_MalformedJson_ReturnsNotOk()
     {
         var (ok, _, _) = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ broken"))
             .GetPrefixesAsync(1);
@@ -119,7 +119,7 @@ public class BgpViewClientTests
     }
 
     [Fact]
-    public async Task GetPrefixes_Cancellation_Throws() // краевой случай: отмена
+    public async Task GetPrefixes_Cancellation_Throws()
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();

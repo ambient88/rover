@@ -1,30 +1,30 @@
 namespace SubnetSearch.Classification;
 
-// Загружает community-теги ASN с bgp.tools (https://bgp.tools/kb/api).
-// Формат файла: "AS44684,Mythic Beasts Ltd" — по строке на ASN.
-// Файлы скачиваются DownloadManager'ом как bgptools-{tag}.csv (TTL 7 дней).
+// Loads ASN community tags from bgp.tools (https://bgp.tools/kb/api).
+// File format: "AS44684,Mythic Beasts Ltd", one line per ASN.
+// Files are downloaded by DownloadManager as bgptools-{tag}.csv (TTL 7 days).
 public static class BgpToolsTagLoader
 {
-    // Теги, участвующие в определении типа ASN (см. AsnTypeResolver).
+    // Tags used when determining the ASN type (see AsnTypeResolver).
     public static readonly string[] Tags =
     [
-        "vpsh",   // VPS hosting (позитивный сигнал)
+        "vpsh",   // VPS hosting (positive signal)
         "cdn",    // CDN
         "dsl",    // residential ISP
-        "mobile", // мобильные операторы
-        "satnet", // спутниковые сети
-        "gov",    // государственные
-        "uni",    // университеты/образование
-        "perso",  // персональные ASN
-        "corp",   // корпоративные сети
-        "biznet", // B2B-сети
-        "event",  // временные (конференции)
+        "mobile", // mobile carriers
+        "satnet", // satellite networks
+        "gov",    // government
+        "uni",    // universities / education
+        "perso",  // personal ASNs
+        "corp",   // corporate networks
+        "biznet", // B2B networks
+        "event",  // temporary (conferences)
     ];
 
     public static string FileName(string tag) => $"bgptools-{tag}.csv";
 
-    // Возвращает tag → множество ASN. Отсутствующий файл → пустое множество
-    // (резолвер деградирует до категорий as.json).
+    // Returns the ASNs for each tag. A missing file produces an empty set.
+    // (the resolver falls back to as.json categories).
     public static async Task<IReadOnlyDictionary<string, HashSet<uint>>> LoadAllAsync(string dataDir)
     {
         var loads = Tags
@@ -56,17 +56,17 @@ public static class BgpToolsTagLoader
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Повреждённый/недоступный файл → пустое множество, резолвер деградирует мягко.
+            // A corrupt or unreadable file produces an empty set so the resolver can continue.
         }
         return set;
     }
 
-    // Парсит asn → имя из tag-файла (например vpsh.csv), нужен для vpsh-supplement (D-06):
-    // кандидаты конструируются напрямую из имени bgp.tools, без похода в PeeringDB по одному ASN.
-    // Формат строки: "AS215439,PLAY2GO LTD" — ASN до первой запятой, имя — весь остаток
-    // (запятые внутри имени сохраняются, например "AS1,Foo, Inc."). Строки без запятой или
-    // с пустым именем пропускаются — supplement-кандидату обязательно нужно имя.
-    // Дубликаты ASN: первая запись побеждает (TryAdd).
+    // Parses ASN names from a tag file such as vpsh.csv for local supplements.
+    // candidates are built directly from the bgp.tools name, without a per-ASN PeeringDB lookup.
+    // Line format: "AS215439,PLAY2GO LTD", ASN up to the first comma, name is the rest
+    // (commas inside the name are kept, for example "AS1,Foo, Inc."). Lines without a comma or
+    // with an empty name are skipped; a supplement candidate must have a name.
+    // Duplicate ASNs: the first entry wins (TryAdd).
     public static async Task<IReadOnlyDictionary<uint, string>> LoadTagWithNamesAsync(string filePath)
     {
         var map = new Dictionary<uint, string>();
@@ -92,7 +92,7 @@ public static class BgpToolsTagLoader
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Повреждённый/недоступный файл → пустой словарь, supplement молча пропускается.
+            // A corrupt or unreadable file produces an empty dictionary and skips the supplement.
         }
         return map;
     }

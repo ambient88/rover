@@ -1,23 +1,23 @@
 namespace SubnetSearch.Core.Interfaces.Data;
 
 /// <summary>
-/// Абстракция для работы с локальным файловым хранилищем.
+/// Abstraction over a local file store.
 /// </summary>
 public interface IFileStorage
 {
     /// <summary>
-    /// Проверяет, существует ли файл и проходит ли он проверку целостности.
+    /// Checks whether the file exists and passes its integrity check.
     /// </summary>
-    /// <param name="fileName">Имя файла.</param>
-    /// <param name="minSize">Минимально допустимый размер в байтах.</param>
-    /// <returns>true, если файл существует и корректен.</returns>
+    /// <param name="fileName">File name.</param>
+    /// <param name="minSize">Minimum acceptable size in bytes.</param>
+    /// <returns>true if the file exists and is valid.</returns>
     bool IsFileValid(string fileName, long minSize);
 
     /// <summary>
-    /// Сохраняет поток в файл с атомарной заменой (через временный файл).
+    /// Saves a stream to a file with an atomic replace (through a temp file).
     /// </summary>
-    /// <param name="fileName">Имя файла.</param>
-    /// <param name="content">Поток с данными.</param>
-    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <param name="fileName">File name.</param>
+    /// <param name="content">Data stream.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     Task SaveAsync(string fileName, Stream content, CancellationToken cancellationToken = default);
 }

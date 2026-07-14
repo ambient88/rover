@@ -2,7 +2,7 @@ using SubnetSearch.Core.Models.Network;
 
 namespace SubnetSearch.Network.Http;
 
-// Thin HTTP-probing adapter (live requests to remote hosts) — exercised by integration/manual
+// Thin HTTP probing adapter for live requests to remote hosts. It requires integration or manual
 // runs, not unit tests; excluded from coverage so it doesn't skew the business-logic metric.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public class HttpFingerprintService
@@ -11,7 +11,7 @@ public class HttpFingerprintService
     private static readonly HttpClient _http = new(new HttpClientHandler
     {
         AllowAutoRedirect = false,
-        // Allow expired certificates — they still carry fingerprinting information (issuer, SANs).
+        // Accept expired certificates because their issuer and SANs still provide fingerprinting data.
         // Reject certificates with no valid chain at all (e.g. self-signed without trust anchor)
         // to prevent MITM from injecting arbitrary headers into fingerprint results.
         ServerCertificateCustomValidationCallback = (_, _, _, errors) =>

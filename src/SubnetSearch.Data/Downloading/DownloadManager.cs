@@ -47,7 +47,7 @@ public class DownloadManager
             {
                 bool fileValid = _storage.IsFileValid(file.FileName, file.MinSize);
 
-                // 1. File missing or corrupted → download unconditionally.
+                // 1. Download an absent or corrupted file without a conditional request.
                 if (!fileValid)
                     return await DownloadAndSaveAsync(file, options, progressFactory, cancellationToken);
 
@@ -55,15 +55,15 @@ public class DownloadManager
                 if (force)
                     return await DownloadAndSaveAsync(file, options, progressFactory, cancellationToken);
 
-                // 3. No MaxAge configured → never re-check (download-once semantics).
+                // 3. Without MaxAge, keep the first successful download permanently.
                 if (file.MaxAge == null)
                     return new FileDownloadResult(file.FileName, true, Skipped: true);
 
-                // 4. TTL not yet expired → skip.
+                // 4. Skip a file while its TTL remains valid.
                 if (!_metaStore.IsStale(file.FileName, file.MaxAge.Value))
                     return new FileDownloadResult(file.FileName, true, Skipped: true);
 
-                // 5. TTL expired — conditional check or resume interrupted update.
+                // 5. The TTL expired, so check for an update or resume an interrupted download.
                 var meta     = _metaStore.Load(file.FileName);
                 string? partPath = options.PartialDownloadsDir != null
                     ? Path.Combine(options.PartialDownloadsDir, file.FileName + ".part")
@@ -71,7 +71,7 @@ public class DownloadManager
 
                 if (partPath != null && File.Exists(partPath))
                 {
-                    // Previous update download was interrupted — resume it directly.
+                    // Resume the previous update download if it was interrupted.
                     return await DownloadAndSaveAsync(file, options, progressFactory, cancellationToken);
                 }
 
@@ -86,8 +86,8 @@ public class DownloadManager
                     return new FileDownloadResult(file.FileName, true, NotModified: true);
                 }
 
-                // 6. Server returned 200 — content already downloaded by ConditionalDownloadAsync.
-                // Save it directly; do NOT call DownloadAndSaveAsync (that would re-download).
+                // 6. A 200 response means ConditionalDownloadAsync already downloaded the content.
+                // Save the completed response directly to avoid downloading it again.
                 await using (result.Content)
                     await _storage.SaveAsync(file.FileName, result.Content!, cancellationToken);
 
@@ -172,7 +172,7 @@ public class DownloadManager
         IProgress<long>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        // File already valid — return immediately without downloading.
+        // Return immediately when the existing file is valid.
         if (_storage.IsFileValid(file.FileName, file.MinSize))
             return true;
 

@@ -20,13 +20,13 @@ public static class DomainRenderer
         if (!string.IsNullOrWhiteSpace(result.WhoisStatus))
             AnsiConsole.MarkupLine($"  [bold]WHOIS status:[/]   {Markup.Escape(result.WhoisStatus)}");
 
-        // HTTP/TLS fingerprint — printed separately, not via a fake ClassificationResult.
+        // Print the HTTP and TLS fingerprint separately instead of creating a fake classification result.
         if (result.Http != null)
             ClassificationRenderer.PrintHttpBlock(result.Http);
 
         Console.WriteLine();
 
-        // Deduplicate IP results by ASN — no need to show identical hosting blocks twice.
+        // Deduplicate IP results by ASN to avoid showing the same hosting block twice.
         var seen = new HashSet<uint?>();
         foreach (var ipRes in result.IpResults)
         {

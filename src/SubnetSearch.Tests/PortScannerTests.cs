@@ -5,11 +5,10 @@ using SubnetSearch.Network;
 
 namespace SubnetSearch.Tests;
 
-// PortScanner проверяет реальные TCP-подключения. Тесты детерминированы: слушатель
-// поднимается на localhost на эфемерном порту, никакой внешней сети.
+// PortScanner uses real TCP connections against a local listener on an ephemeral port.
 public class PortScannerTests
 {
-    // Поднимает TCP-слушателя на свободном порту loopback; возвращает порт и disposable.
+    // Start a TCP listener on an available loopback port and return it with the port number.
     private static (int Port, TcpListener Listener) StartListener()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -32,9 +31,9 @@ public class PortScannerTests
     }
 
     [Fact]
-    public async Task Scan_ClosedPort_NotReported() // краевой случай: закрытый порт
+    public async Task Scan_ClosedPort_NotReported()
     {
-        // Поднимаем и сразу останавливаем слушателя — порт освобождён (почти наверняка закрыт).
+        // Stop a new listener immediately to obtain an available closed port.
         var (port, listener) = StartListener();
         listener.Stop();
 
@@ -48,7 +47,7 @@ public class PortScannerTests
     {
         var (openPort, listener) = StartListener();
         var (closedPort, closedListener) = StartListener();
-        closedListener.Stop(); // этот порт закрыт
+        closedListener.Stop(); // This port is closed.
         try
         {
             var result = await new PortScanner().ScanAsync("127.0.0.1", new[] { closedPort, openPort });
@@ -61,7 +60,7 @@ public class PortScannerTests
     }
 
     [Fact]
-    public async Task Scan_Cancellation_Throws() // краевой случай: отмена скана
+    public async Task Scan_Cancellation_Throws()
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();
@@ -71,7 +70,7 @@ public class PortScannerTests
     }
 
     [Fact]
-    public async Task Scan_EmptyPortList_ReturnsEmpty() // краевой случай: пустой список портов
+    public async Task Scan_EmptyPortList_ReturnsEmpty()
     {
         var open = await new PortScanner().ScanAsync("127.0.0.1", Array.Empty<int>());
 

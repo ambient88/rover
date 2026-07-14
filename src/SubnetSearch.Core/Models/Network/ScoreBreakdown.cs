@@ -1,9 +1,9 @@
 namespace SubnetSearch.Core.Models.Network;
 
 public record ScoreBreakdown(
-    double  Latency,     // 0–1
-    double  Peering,     // 0–1
-    double  Reputation,  // 0–1
-    double  Size,        // 0–1
-    double? Rpki         // 0–1, null if unavailable
+    double  Latency,     // Value from 0 to 1.
+    double  Peering,     // Value from 0 to 1.
+    double  Reputation,  // Value from 0 to 1.
+    double  Size,        // Value from 0 to 1.
+    double? Rpki         // Value from 0 to 1, or null when unavailable.
 );

@@ -32,8 +32,8 @@ public class CaidaClassificationLoaderTests : IDisposable
             "13335|CAIDA|Content\n" +
             "\n" +
             "3356|CAIDA|Transit/Access\n" +
-            "notanumber|CAIDA|Content\n" +   // bad ASN → skipped
-            "64500|CAIDA\n" +                // too few columns → skipped
+            "notanumber|CAIDA|Content\n" +   // Skip an invalid ASN.
+            "64500|CAIDA\n" +                // Skip rows with too few columns.
             "64501|CAIDA|Enterprise\n");
 
         var map = await CaidaClassificationLoader.LoadAsync(path);

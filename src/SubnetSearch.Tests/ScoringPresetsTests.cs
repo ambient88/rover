@@ -3,11 +3,10 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Рейтинговый алгоритм с пресетами: ScoringWeights (Balanced/Performance/Security),
-// редистрибуция весов при отсутствии данных, объединение источников репутации.
+// Covers scoring presets, missing-data weight redistribution, and reputation source aggregation.
 public class ScoringPresetsTests
 {
-    // ── Пресеты: разбор имени ──
+    // Preset name parsing.
 
     [Theory]
     [InlineData("performance")]
@@ -38,13 +37,13 @@ public class ScoringPresetsTests
         ScoringWeights.Security.Rpki.Should().BeGreaterThan(ScoringWeights.Performance.Rpki);
     }
 
-    // ── Пресеты влияют на итоговый балл ──
+    // Presets affect the final score.
 
     [Fact]
     public void Preset_Performance_RewardsLowLatencyOverCleanReputation()
     {
-        // Провайдер: отличная задержка (5мс), грязная репутация (abuse 0.9).
-        // Performance (latency-вес 0.45) ценит его выше, чем Security (reputation-вес 0.45).
+        // The performance preset values a provider with 5 ms latency and poor reputation
+        // more highly than the security preset does.
         double perf = ProviderScorer.ComputeScore(
             5, null, 20, 100, 0.9, 0.9, null, null, 0.5, weights: ScoringWeights.Performance).Score;
         double sec = ProviderScorer.ComputeScore(
@@ -56,8 +55,8 @@ public class ScoringPresetsTests
     [Fact]
     public void Preset_Security_RewardsCleanReputationOverLowLatency()
     {
-        // Провайдер: чистая репутация, но высокая задержка (180мс).
-        // Security (reputation-вес) ценит его выше, чем Performance (latency-вес).
+        // The security preset values a clean provider with 180 ms latency
+        // more highly than the performance preset does.
         double sec = ProviderScorer.ComputeScore(
             180, null, 20, 100, 0.0, 0.0, null, null, 1.0, weights: ScoringWeights.Security).Score;
         double perf = ProviderScorer.ComputeScore(
@@ -77,13 +76,13 @@ public class ScoringPresetsTests
         implicitBalanced.Should().Be(explicitBalanced);
     }
 
-    // ── Редистрибуция весов: отсутствие данных не штрафует ──
+    // Missing data redistributes its weight without a penalty.
 
     [Fact]
     public void ComputeScore_MissingLatency_RedistributesWeight_NoPenalty()
     {
-        // Отличный по всем сигналам провайдер без ping-данных всё равно набирает высокий балл:
-        // вес задержки перераспределяется на доступные компоненты, а не обнуляет их.
+        // A provider with strong available signals still scores well without ping data
+        // because the latency weight moves to the remaining components.
         double noLatency = ProviderScorer.ComputeScore(
             null, null, 100, 1000, 0.0, 0.0, null, null, 1.0, totalIpCount: 1_000_000).Score;
 
@@ -93,7 +92,7 @@ public class ScoringPresetsTests
     [Fact]
     public void ComputeScore_MissingRpki_RedistributesWeight_NoPenalty()
     {
-        // Без RPKI-данных балл не должен быть ниже, чем с нулевым RPKI (это был бы штраф).
+        // Missing RPKI data must score higher than an explicit zero RPKI value.
         double missingRpki = ProviderScorer.ComputeScore(
             10, null, 100, 1000, 0.0, 0.0, null, null, rpkiScore: null, totalIpCount: 1_000_000).Score;
         double zeroRpki = ProviderScorer.ComputeScore(
@@ -115,7 +114,7 @@ public class ScoringPresetsTests
         missingPeering.Should().BeGreaterThan(zeroPeering);
     }
 
-    // ── Репутация объединяется из всех доступных источников ──
+    // Reputation combines all available sources.
 
     [Fact]
     public void ComputeScore_HigherAbuseIpDbScore_LowersScore()
@@ -149,9 +148,8 @@ public class ScoringPresetsTests
     [Fact]
     public void ComputeScore_ResultAlwaysInUnitRange()
     {
-        // Экстремумы обоих концов остаются в [0,1] при любом пресете.
-        // Допуск eps: при идеальных входах перераспределение весов даёт ~1.0 ± флоат-погрешность
-        // (наблюдалось 1.0000000000000002) — это округление double, а не выход за диапазон.
+        // Extreme inputs remain within the unit range for every preset.
+        // The tolerance accounts for normal double rounding near 1.0.
         const double eps = 1e-9;
         foreach (var w in new[] { ScoringWeights.Balanced, ScoringWeights.Performance, ScoringWeights.Security })
         {

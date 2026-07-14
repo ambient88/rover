@@ -6,8 +6,8 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// IpListAnalyzer: извлечение IPv4 из текста, агрегация по ASN через ip2asn-индекс
-// (с пропуском приватных/зарезервированных), чтение локальных .txt/.csv источников.
+// Covers IPv4 extraction, ASN aggregation through the ip2asn index, reserved address filtering,
+// and local .txt or .csv sources.
 public class IpListAnalyzerAggregateTests
 {
     private static Ip2AsnRecord Rec(string start, string end, uint asn) => new()
@@ -23,7 +23,7 @@ public class IpListAnalyzerAggregateTests
         Rec("1.1.1.0", "1.1.1.255", 13335),
     });
 
-    // ── ExtractIps ──
+    // ExtractIps tests.
 
     [Fact]
     public void ExtractIps_ExtractsAndDeduplicates()
@@ -34,10 +34,10 @@ public class IpListAnalyzerAggregateTests
     }
 
     [Fact]
-    public void ExtractIps_NoIps_ReturnsEmpty() // краевой случай: текст без IP
+    public void ExtractIps_NoIps_ReturnsEmpty()
         => IpListAnalyzer.ExtractIps("no addresses here").Should().BeEmpty();
 
-    // ── AggregateByAsn ──
+    // AggregateByAsn tests.
 
     [Fact]
     public void AggregateByAsn_CountsAndSortsDescending()
@@ -56,13 +56,13 @@ public class IpListAnalyzerAggregateTests
     {
         var ips = new[]
         {
-            "8.8.8.8",        // маппится → 15169
+            "8.8.8.8",        // Maps to AS15169.
             "10.0.0.1",       // RFC1918 private
             "192.168.1.1",    // RFC1918 private
             "127.0.0.1",      // loopback
             "169.254.1.1",    // link-local / metadata
             "203.0.113.5",    // TEST-NET-3
-            "9.9.9.9",        // публичный, но нет в индексе
+            "9.9.9.9",        // Public but absent from the index.
         };
 
         var agg = IpListAnalyzer.AggregateByAsn(ips, Index());
@@ -78,7 +78,7 @@ public class IpListAnalyzerAggregateTests
         agg.Should().ContainSingle().Which.Asn.Should().Be(15169u);
     }
 
-    // ── ReadSourceAsync: локальные файлы ──
+    // Local file sources for ReadSourceAsync.
 
     [Fact]
     public async Task ReadSource_TxtFile_ReturnsContent()
@@ -109,7 +109,7 @@ public class IpListAnalyzerAggregateTests
     }
 
     [Fact]
-    public async Task ReadSource_DisallowedExtension_Throws() // краевой случай: не .txt/.csv
+    public async Task ReadSource_DisallowedExtension_Throws()
     {
         var path = Path.Combine(Path.GetTempPath(), $"secret-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(path, "{}");

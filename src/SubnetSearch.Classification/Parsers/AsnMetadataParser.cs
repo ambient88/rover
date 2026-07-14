@@ -5,7 +5,7 @@ using SubnetSearch.Core.Utilities;
 
 namespace SubnetSearch.Classification;
 
-/// <summary>Профиль сети из as.json для gate long-tail: транзитная роль + охват (reach).</summary>
+/// <summary>A network profile from as.json for the long-tail gate: transit role plus reach.</summary>
 public readonly record struct AsnNetworkProfile(string? NetworkRole, long Reach);
 
 public class AsnMetadataParser
@@ -49,9 +49,9 @@ public class AsnMetadataParser
     }
 
     /// <summary>
-    /// Возвращает полную карту asn → категория (hosting/isp/business/education_research/
-    /// government_admin) из as.json. Записи без категории пропускаются.
-    /// Используется AsnTypeResolver'ом как локальная замена ASN-типов ipapi.is.
+    /// Returns the full ASN category map from as.json.
+    /// Entries without a category are skipped.
+    /// Used by AsnTypeResolver as a local replacement for ipapi.is ASN types.
     /// </summary>
     public async Task<Dictionary<uint, string>> LoadCategoriesAsync(string jsonFilePath)
     {
@@ -67,9 +67,8 @@ public class AsnMetadataParser
     }
 
     /// <summary>
-    /// Карта asn → (networkRole, reach) из as.json — питает локальный gate long-tail
-    /// (транзитные роли и большой reach = карьер, не арендуемый провайдер). reach=0 при
-    /// отсутствии stats.
+    /// Returns the network role and reach map used by the local long-tail gate.
+    /// Transit roles and high reach identify carriers. Missing statistics use zero reach.
     /// </summary>
     public async Task<Dictionary<uint, AsnNetworkProfile>> LoadNetworkProfilesAsync(string jsonFilePath)
     {

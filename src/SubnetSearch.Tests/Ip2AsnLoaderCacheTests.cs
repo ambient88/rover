@@ -33,8 +33,8 @@ public class Ip2AsnLoaderCacheTests
     public async Task Load_SkipsIpv6AndUnparsableRows()
     {
         var path = WriteGzip(
-            "2001:db8::\t2001:db8::ff\t100\tUS\tV6NET\n" +   // IPv6 → skipped
-            "notanip\twhatever\t200\tUS\tGARBAGE\n" +         // unparsable → skipped
+            "2001:db8::\t2001:db8::ff\t100\tUS\tV6NET\n" +   // IPv6 is skipped.
+            "notanip\twhatever\t200\tUS\tGARBAGE\n" +         // Invalid addresses are skipped.
             "1.0.0.0\t1.0.0.255\t300\tUS\tGOODNET\n");        // valid IPv4
         try
         {

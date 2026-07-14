@@ -2,7 +2,7 @@ namespace SubnetSearch.Network.Recommend;
 
 public static class PricingPageResolver
 {
-    // ASN → pricing page (highest precision, checked first)
+    // ASN-specific pricing pages have the highest precision and are checked first.
     private static readonly Dictionary<uint, string> ByAsn = new()
     {
         [24940]  = "https://www.hetzner.com/cloud/",
@@ -32,7 +32,7 @@ public static class PricingPageResolver
         [400304] = "https://bandwagonhost.com/vps-hosting.php",
     };
 
-    // Keyword in org name → pricing page (fallback)
+    // Organization name keywords provide the fallback pricing page.
     private static readonly (string Keyword, string Url)[] ByKeyword =
     [
         ("Hetzner",        "https://www.hetzner.com/cloud/"),

@@ -38,7 +38,7 @@ public sealed class RecommendCommand(
     private async Task<int> ExecuteWithCacheAsync(RipeStatCache ripeCache, CancellationToken ct)
     {
         var executionClock = System.Diagnostics.Stopwatch.StartNew();
-        // Original HandleRecommend parameters map to CliContext + parsed args.
+        // Map the original recommendation parameters to CliContext and parsed arguments.
         // Aliased to locals so the transferred body stays verbatim and the Spectre
         // Status lambda parameter `ctx` (which shadows the primary-ctor CliContext)
         // never collides with the CliContext accessors.
@@ -50,7 +50,7 @@ public sealed class RecommendCommand(
         bool isGlobal  = string.IsNullOrWhiteSpace(region);
         var infoTypes  = ProviderFinder.ResolveInfoTypes(typeFilter); // null = no filter (all types)
 
-        // Parse comma-separated country codes: "DE,NL,FI" → ["DE","NL","FI"]
+        // Parse a comma-separated list such as "DE,NL,FI" into individual country codes.
         string[]? countryCodes = countryFilter?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(c => c.ToUpperInvariant())
@@ -109,16 +109,12 @@ public sealed class RecommendCommand(
         var recoIpIndex = new IpRangeIndex(ip2asnRecords);
         var caidaData = await caidaTask;
 
-        // Локальная карта asn → тип: as.json (ipverse) + bgp.tools tags вместо сетевых
-        // запросов к ipapi.is (эндпоинт умирал молча, а квота 1000/день сгорала за один прогон).
+        // Use a local ASN type map from as.json and bgp.tools instead of ipapi.is calls.
         var asJsonCategories = await asJsonTask;
         var bgpToolsTags     = await bgpToolsTask;
         var asnTypes         = AsnTypeResolver.Build(bgpToolsTags, asJsonCategories);
 
-        // Allowlist-модель server-фильтров (спека 2026-07-08, pure-allowlist ревизия):
-        // членство в --type vps/dedicated/cloud/server даёт ТОЛЬКО курируемое ядро
-        // server-providers.json (+ .local.json override). Авто-гейт по vpsh-тегу убран —
-        // ничего не проходит автоматически, только проверенные арендуемые провайдеры.
+        // Server filters use verified members from server-providers.json and its local override.
         var serverProviders = await serverProvidersTask;
 
         var bgpView    = new BgpViewClient(peeringDbHttp);
@@ -141,14 +137,14 @@ public sealed class RecommendCommand(
         Dictionary<uint, int>? coverageMap = null;
 
         // --from: build coverage map independently, then run the same global search as always.
-        // Coverage is applied as an annotation after scoring — not a separate search pipeline.
+        // Coverage is added after scoring and does not create a separate search pipeline.
         IReadOnlyList<(uint Asn, int Count)> fromAsnList = [];
         if (!string.IsNullOrWhiteSpace(fromSource))
         {
-            // Фолбэк-маршрут для URL-источников: peeringDbHttp привязан к физическому
-            // интерфейсу (мимо VPN), и заблокированные провайдером хосты
-            // (raw.githubusercontent.com) на нём падают с «SSL connection could not be
-            // established». Обычный HttpClient идёт системным маршрутом — через VPN.
+            // Fallback route for URL sources: peeringDbHttp is bound to the physical
+            // interface (bypassing VPN), and hosts the ISP blocks
+            // (raw.githubusercontent.com) fail on it with "SSL connection could not be
+            // established". A normal HttpClient uses the system route, through the VPN.
             using var systemRouteHandler = new HttpClientHandler { AllowAutoRedirect = false };
             using var systemRouteHttp = new HttpClient(systemRouteHandler);
             systemRouteHttp.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
@@ -175,8 +171,8 @@ public sealed class RecommendCommand(
             }
             catch (Exception ex)
             {
-                // Внешнее сообщение вида «The SSL connection could not be established,
-                // see inner exception» без inner бесполезно — разворачиваем до корня.
+                // An outer message like "The SSL connection could not be established,
+                // see inner exception" is useless without the inner one, so we unwrap to the root.
                 var msg = ex.Message;
                 if (ex.InnerException != null)
                     msg += $" ← {ex.GetBaseException().Message}";
@@ -187,8 +183,8 @@ public sealed class RecommendCommand(
         bool needsHostingFilter = ProviderFinder.ShouldExcludeCdn(typeFilter);
         bool needsAiExclusion   = ProviderFinder.ShouldExcludeAi(typeFilter);
         bool aiOnly             = ProviderFinder.ShouldFilterAiOnly(typeFilter);
-        // core-first: для global server-типа без --from кандидаты берём из ядра, а не из
-        // широкого PeeringDB-pull (иначе обогащаем ~1448 сетей, чтобы оставить единицы).
+        // core-first: for the global server type without --from, candidates come from the core, not from
+        // a broad PeeringDB pull (otherwise we enrich ~1448 networks just to keep a handful).
         bool useCoreFirst       = ProviderFinder.UseCoreFirstSource(typeFilter, region, fromAsnList.Count > 0);
         IReadOnlyList<(uint Asn, int Count)>? localHostingAsns = null;
 
@@ -199,12 +195,12 @@ public sealed class RecommendCommand(
 
                 if (useCoreFirst)
                 {
-                    // core-first: кандидаты — только ядро (server-providers.json), обогащаем per-ASN.
-                    // Ни широкого PeeringDB-pull, ни RIPE-country-supplement: RIPE грузится на
-                    // десятки ASN ядра, а не на 1448 сетей → устойчиво и полно.
+                    // core-first: candidates are the core only (server-providers.json), enriched per-ASN.
+                    // No broad PeeringDB pull and no RIPE-country supplement: RIPE is queried for
+                    // This processes a small curated ASN set instead of thousands of networks.
                     var coreAsnSet = new HashSet<uint>(serverProviders.CoreAsnsForType(typeFilter));
 
-                    // Локальная карта ASN→страны из ip2asn (только для ASN ядра — дёшево).
+                    // Build a small local country map for core ASNs from ip2asn.
                     var asnToCountries = new Dictionary<uint, HashSet<string>>();
                     foreach (var r in ip2asnRecords)
                     {
@@ -218,7 +214,7 @@ public sealed class RecommendCommand(
                         coreAsnSet, asnToCountries, countryCodes ?? []);
                     var coreKeep = new HashSet<uint>(coreAsns);
                     var coreList = coreAsns.Select(a => (Asn: a, Coverage: 0)).ToList();
-                    // Имена из ядра — чтобы кандидат не терялся, когда PeeringDB+RIPE молчат.
+                    // Core names, so a candidate is not lost when PeeringDB and RIPE are silent.
                     var coreNames = serverProviders.CoreEntriesForType(typeFilter)
                         .Where(e => coreKeep.Contains(e.Asn))
                         .ToDictionary(e => e.Asn, e => e.Name);
@@ -231,9 +227,9 @@ public sealed class RecommendCommand(
                     else
                     {
                         ctx.Status($"Enriching {coreList.Count} curated providers via RIPE Stat...");
-                        // excludeCdn/excludeAi=false: рантайм-хард-блоки CDN/AI здесь не нужны —
-                        // ядро УЖЕ очищено от CDN/AI при генерации (asn-exclusions прополкой). Инвариант
-                        // держится генератором; обновление asn-exclusions требует регенерации ядра.
+                        // excludeCdn/excludeAi=false: the runtime CDN/AI hard-blocks are not needed here,
+                        // the core is ALREADY cleared of CDN/AI at generation time (weeded via asn-exclusions). The invariant
+                        // is held by the generator; updating asn-exclusions requires regenerating the core.
                         var coreFallback = BuildIp2AsnPrefixes(ip2asnRecords, coreKeep);
                         candidates = await finder.FindByAsnListAsync(
                             coreList, infoTypes: null, excludeCdn: false, excludeAi: false,
@@ -245,9 +241,9 @@ public sealed class RecommendCommand(
                 }
                 else if (isGlobal && needsHostingFilter)
                 {
-                    // server-тип С --from: кандидаты = ASN из списка, входящие в ядро по типу
-                    // (ВСЕ пересечение, не top-N по покрытию). Обогащаем только их; широкого
-                    // PeeringDB-pull нет. Coverage из списка сохраняем для аннотации.
+                    // server type WITH --from: candidates are ASNs from the list that are in the core for that type
+                    // (the FULL intersection, not top-N by coverage). We enrich only those; no broad
+                    // PeeringDB pull. Coverage from the list is kept for annotation.
                     var coreForType = new HashSet<uint>(serverProviders.CoreAsnsForType(typeFilter));
                     var fromCore = fromAsnList
                         .Where(a => coreForType.Contains(a.Asn))
@@ -277,7 +273,7 @@ public sealed class RecommendCommand(
                 }
                 else if (isGlobal)
                 {
-                    // No hosting filter: PeeringDB global discovery + local file supplement.
+                    // Without a hosting filter, combine global PeeringDB discovery with local data.
                     ctx.Status("Fetching all hosting networks from PeeringDB...");
                     candidates = await finder.FindGlobalAsync(
                         countryCodes, topN: Math.Max(returnTop * 5, 300), infoTypes: infoTypes,
@@ -318,12 +314,12 @@ public sealed class RecommendCommand(
                 }
 
                 // --from: include ASNs from the user's IP list that weren't found by the main search.
-                // Applies the same hosting filter as the main search — game companies (Valve),
+                // Apply the same hosting filter as the main search to exclude game companies such as Valve,
                 // media/CDN networks are still excluded when --type server is active.
-                // The hosting filter uses balanced mode (null ipapi.is type + ≥1024 IPs passes),
+                // The hosting filter uses balanced mode and accepts a missing ipapi.is type with at least 1024 IPs.
                 // so legitimate cloud providers like Yandex Cloud pass even when ipapi.is is down.
-                // Для server-типов список --from уже учтён выше (пересечение с ядром);
-                // здесь supplement только для не-server (--from без типа / cdn / nsp).
+                // For server types the --from list is already handled above (intersection with the core);
+                // here the supplement is only for non-server (--from without a type / cdn / nsp).
                 if (fromAsnList.Count > 0 && !ProviderFinder.IsServerTypeFilter(typeFilter))
                 {
                     var foundAsnsSet = new HashSet<uint>(candidates.Select(c => c.Asn));
@@ -343,7 +339,7 @@ public sealed class RecommendCommand(
                 }
 
                 // Country filter: PeeringDB bulk API does not return 'country', so we enrich
-                // candidates from ip2asn (which has authoritative ASN→country mappings) before
+                // candidates from ip2asn, which has authoritative ASN-to-country mappings, before
                 // filtering. Applied after all supplements to prevent bypass via --from or local DBs.
                 if (countryCodes is { Length: > 0 })
                 {
@@ -437,9 +433,9 @@ public sealed class RecommendCommand(
                         var localWhitelist2 = new HashSet<uint>(localHostingAsns.Select(a => a.Asn));
 
                         ctx.Status($"Filtering {supplementPairs.Count} country ASNs by local ASN type...");
-                        // Локальная карта типов (as.json + bgp.tools) вместо тысяч запросов к ipapi.is.
-                        // Whitelist спасает только неизвестных — явный не-hosting вердикт сильнее
-                        // (протухшие диапазоны в датасетах: кейс Blizzard/PEER 1).
+                        // Use the local as.json and bgp.tools type map to avoid thousands of ipapi.is calls.
+                        // The whitelist rescues only unknowns; an explicit non-hosting verdict wins
+                        // (stale ranges in the datasets: the Blizzard/PEER 1 case).
                         var filteredPairs = supplementPairs
                             .Where(pair =>
                             {
@@ -450,7 +446,7 @@ public sealed class RecommendCommand(
                             .ToList();
                         if (filteredPairs.Count > 0)
                         {
-                            // Build ASN→country map for tagging supplement results.
+                            // Build an ASN-to-country map for supplement result tags.
                             var asnToCountry = new Dictionary<uint, string>();
                             foreach (var cc in countryCodes)
                             {
@@ -480,8 +476,8 @@ public sealed class RecommendCommand(
 
                 // Single choke-point for the vps/dedicated/cloud/server allowlist: all discovery
                 // paths (global / region / --from / country-supplement) merge into `candidates`
-                // above. Applied once here so the region path — which alone cannot distinguish
-                // vps from dedicated/cloud — is covered too (pure allowlist: только ядро).
+                // above. Apply it once here because the region path cannot distinguish
+                // vps from dedicated/cloud is covered too (pure allowlist: the core only).
                 candidates = ProviderFinder.ApplyServerAllowlist(
                     candidates, typeFilter, serverProviders);
                 if (ProviderFinder.IsServerTypeFilter(typeFilter))
@@ -497,7 +493,7 @@ public sealed class RecommendCommand(
 
                 // CDN pre-filter: apply before scoring so CDN providers (Cloudflare, Akamai, Fastly)
                 // aren't crowded out of top-N by large IaaS providers (Microsoft, Amazon) whose IP pools
-                // score higher on size metrics. PeeringDB "Content" mixes both types — filter IaaS first.
+                // score higher on size metrics. PeeringDB "Content" mixes both types, so filter IaaS first.
                 if (typeFilter?.ToLowerInvariant() is "cdn" or "content")
                 {
                     localHostingAsns ??= await GetLocalHostingAsnsAsync(dataDir, recoIpIndex);
@@ -513,7 +509,7 @@ public sealed class RecommendCommand(
                 var weights  = ScoringWeights.FromName(preset);
 
                 // When --from is active: pin top-coverage providers so they survive the
-                // prescore top-N cut in Phase 2 of scoring. Without this, providers with
+                // prescore shortlist. Without this, providers with
                 // many IPs from the list but few IXP peerings (e.g. Yandex Cloud: 535 IPs,
                 // 11 peerings) are eliminated by the peering-weighted prescore before ping.
                 IReadOnlySet<uint>? pinnedAsns = null;
@@ -528,9 +524,9 @@ public sealed class RecommendCommand(
                         .ToHashSet();
                 }
 
-                // WR-06: в режиме --from пользователь явно перечислил провайдеров своим
-                // списком IP — жёсткий фильтр abuser_score > 0.75 отключается, как и
-                // задокументировано у хард-фильтра в ProviderScorer.
+                // WR-06: in --from mode the user explicitly listed providers with their own
+                // IP list, so the hard abuser_score > 0.75 filter is disabled, as
+                // documented on the hard filter in ProviderScorer.
                 var scoringNetworkBudget = RemainingExecutionTime(executionClock);
                 pingVerificationConstrained = maxPingMs.HasValue
                     && scoringNetworkBudget < TimeSpan.FromSeconds(4);
@@ -622,7 +618,7 @@ public sealed class RecommendCommand(
                 if (typeFilter != null)
                     AnsiConsole.MarkupLine($"[dim]  --type {Markup.Escape(typeFilter)} may be filtering too aggressively.[/]");
             }
-            return 0; // WR-04: flush выполняется в finally ExecuteAsync
+            return 0; // WR-04: the flush runs in the ExecuteAsync finally block
         }
 
         // --from: annotate results with coverage from the IP list.
@@ -704,18 +700,18 @@ public sealed class RecommendCommand(
 
         RecommendationRenderer.PrintRecommendations(title, results, abuseIpDb != null, greyNoise != null, traceTo != null);
 
-        return 0; // WR-04: flush выполняется в finally ExecuteAsync
+        return 0; // WR-04: the flush runs in the ExecuteAsync finally block
     }
 
-    // ================== HELPERS ==================
+    // Helper methods.
     private static TimeSpan RemainingExecutionTime(System.Diagnostics.Stopwatch clock)
     {
         var remaining = ExecutionBudget - clock.Elapsed;
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
-    // asn → список CIDR/диапазонов из ip2asn (fallback префиксов, когда RIPE/BGPView молчат).
-    // Строится только для нужного набора ASN — один проход по ip2asnRecords.
+    // Build an ASN prefix fallback from ip2asn when RIPE and BGPView return no data.
+    // Built only for the needed ASN set, in a single pass over ip2asnRecords.
     private static Dictionary<uint, IReadOnlyList<string>> BuildIp2AsnPrefixes(
         IReadOnlyList<SubnetSearch.Core.Models.Classification.Ip2AsnRecord> records, HashSet<uint> asns)
     {

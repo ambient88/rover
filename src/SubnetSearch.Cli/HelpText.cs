@@ -54,7 +54,7 @@ public static class HelpText
         var infoVer = System.Reflection.CustomAttributeExtensions
                          .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(asm)
                          ?.InformationalVersion;
-        // Trim build metadata appended by MSBuild (e.g. "1.2.0-alpha.0+abc1234" → "1.2.0-alpha.0").
+        // Trim MSBuild metadata such as "+abc1234" from a version like "1.2.0-alpha.0+abc1234".
         if (infoVer != null)
         {
             int plus = infoVer.IndexOf('+');

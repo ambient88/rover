@@ -13,11 +13,11 @@ public record ConditionalDownloadResult(
 );
 
 /// <summary>
-/// Абстракция для загрузки файла по URL.
+/// Abstraction for downloading a file by URL.
 /// </summary>
 public interface IFileDownloader
 {
-    // Единственный абстрактный метод — реализуют конкретные классы.
+    // The single abstract method, implemented by concrete classes.
     Task<Stream> DownloadAsync(
         string url,
         DownloadOptions options,

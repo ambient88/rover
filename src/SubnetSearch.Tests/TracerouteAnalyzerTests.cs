@@ -6,8 +6,8 @@ using SubnetSearch.Network;
 
 namespace SubnetSearch.Tests;
 
-// TracerouteAnalyzer: классификация хопов (Normal/ProxyCdn/Timeout), детект скрытого маршрута
-// (значимый хвост таймаутов после CDN-хопа). PTR резолвится через инъецируемый IDnsResolver.
+// TracerouteAnalyzer classifies normal, CDN proxy, and timeout hops. A long timeout tail after a CDN hop
+// indicates a hidden route. PTR names are resolved through the injected IDnsResolver.
 public class TracerouteAnalyzerTests
 {
     private sealed class StubDns : IDnsResolver
@@ -26,7 +26,7 @@ public class TracerouteAnalyzerTests
         => new(n, ip, ptr, ip == null ? null : 10.0);
 
     [Fact]
-    public async Task Analyze_EmptyHops_ReturnsEmptyAnalysis() // краевой случай: пустой трейс
+    public async Task Analyze_EmptyHops_ReturnsEmptyAnalysis()
     {
         var result = await TracerouteAnalyzer.AnalyzeAsync(
             Array.Empty<TracerouteHop>(), new StubDns(new Dictionary<string, string?>()));
@@ -72,7 +72,7 @@ public class TracerouteAnalyzerTests
     [Fact]
     public async Task Analyze_CloudflareIpRange_DetectedWithoutPtr()
     {
-        // 104.18.0.1 попадает в диапазон Cloudflare Workers/Pages — детект по IP, не по PTR.
+        // 104.18.0.1 belongs to a Cloudflare Workers and Pages range, so the IP identifies it without PTR.
         var hops = new[] { Hop(1, "104.18.0.1") };
         var result = await TracerouteAnalyzer.AnalyzeAsync(hops, new StubDns(new Dictionary<string, string?>()));
 
@@ -97,7 +97,7 @@ public class TracerouteAnalyzerTests
     [Fact]
     public async Task Analyze_HiddenRoute_CdnFollowedByTrailingTimeouts()
     {
-        // Последний видимый хоп — Cloudflare-CDN, за ним ≥3 таймаута → маршрут «спрятан за CDN».
+        // Three timeouts after a final visible Cloudflare hop indicate a route hidden behind the CDN.
         var hops = new[]
         {
             Hop(1, "192.0.2.1"),
@@ -118,7 +118,7 @@ public class TracerouteAnalyzerTests
     [Fact]
     public async Task Analyze_TrailingTimeoutsWithoutCdn_NotHidden()
     {
-        // Хвост таймаутов есть, но последний видимый хоп — обычный → не считается скрытым.
+        // A timeout tail after a normal visible hop does not indicate a hidden route.
         var hops = new[] { Hop(1, "8.8.8.8"), Hop(2, null), Hop(3, null), Hop(4, null) };
         var dns = new StubDns(new Dictionary<string, string?> { ["8.8.8.8"] = "dns.google" });
 

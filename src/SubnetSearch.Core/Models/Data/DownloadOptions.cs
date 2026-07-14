@@ -2,29 +2,29 @@
 
 public class DownloadOptions
 {
-    /// <summary>Максимальное количество повторных попыток при ошибке.</summary>
+    /// <summary>Maximum number of retry attempts on error.</summary>
     public int MaxRetries { get; init; } = 3;
 
-    /// <summary>Базовая задержка между повторами (мс), умножается на номер попытки.</summary>
+    /// <summary>Base delay between retries (ms), multiplied by the attempt number.</summary>
     public int RetryDelayMilliseconds { get; init; } = 2000;
 
-    /// <summary>Таймаут для каждой HTTP‑попытки (сек).</summary>
+    /// <summary>Timeout for each HTTP attempt (seconds).</summary>
     public int TimeoutSeconds { get; init; } = 600;
 
     /// <summary>
-    /// Каталог для хранения частично скачанных файлов (.part) между запусками.
-    /// Если null — используется системный temp (resume не переживает перезапуск).
+    /// Directory that holds partially downloaded files (.part) between runs.
+    /// If null, the system temp directory is used (resume does not survive a restart).
     /// </summary>
     public string? PartialDownloadsDir { get; init; }
 
-    /// <summary>Пытаться ли докачать частично загруженный файл (Range‑запрос).</summary>
+    /// <summary>Whether to resume a partially downloaded file (Range request).</summary>
     public bool UseResume { get; init; } = true;
 
-    /// <summary>Прокси‑сервер (строка вида http://host:port).</summary>
+    /// <summary>Proxy server (a string like http://host:port).</summary>
     public string? Proxy { get; init; }
 
-    /// <summary>Ожидаемая SHA256‑строка (hex) для проверки после загрузки.</summary>
+    /// <summary>Expected SHA256 string (hex) used to verify after download.</summary>
     public string? ChecksumSha256 { get; init; }
 
-    // Можно добавить MD5, но оставим пока SHA256
+    // MD5 could be added, but SHA256 is enough for now.
 }

@@ -4,12 +4,12 @@ using SubnetSearch.Core.Models.Data;
 namespace SubnetSearch.Cli;
 
 /// <summary>
-/// Единая точка провижининга data-файлов. Решает режим (<see cref="ProvisioningStatus.Decide"/>)
-/// и исполняет его:
-///   Visible — установка / <c>rover update</c> / первый запуск: полная таблица прогресса Spectre;
+/// Single entry point for data-file provisioning. It picks a mode
+/// (<see cref="ProvisioningStatus.Decide"/>) and runs it:
+///   Visible: install / <c>rover update</c> / first run, with the full Spectre progress table;
 ///   Silent restores the required IP-to-ASN file without the full progress view.
 ///   None uses valid local files immediately, even when their refresh TTL has elapsed.
-/// Ядро загрузки (DownloadManager + retry через bypass-VPN) общее для Visible и Silent.
+/// The download core (DownloadManager plus a bypass-VPN retry) is shared by Visible and Silent.
 /// </summary>
 public sealed class DataProvisioner
 {
@@ -20,9 +20,11 @@ public sealed class DataProvisioner
     private readonly SubnetSearch.Core.Interfaces.Data.IFileStorage _storage;
     private readonly FileMetadataStore _meta;
     private readonly DownloadOptions _options;
+    private readonly string _dataDir;
 
     public DataProvisioner(string dataDir)
     {
+        _dataDir = dataDir;
         _files   = DownloadManagerFactory.GetDefaultFiles();
         _storage = DownloadManagerFactory.CreateStorage(dataDir);
         _meta    = new FileMetadataStore(dataDir);
@@ -36,7 +38,7 @@ public sealed class DataProvisioner
         };
     }
 
-    /// <summary>Выбирает режим и исполняет его. Ничего не делает в режиме None.</summary>
+    /// <summary>Picks a mode and runs it. Does nothing in None mode.</summary>
     public async Task ProvisionAsync(bool isUpdateCommand, CancellationTokenSource cts)
     {
         var status = new ProvisioningStatus(_storage, _files, _meta);
@@ -49,11 +51,11 @@ public sealed class DataProvisioner
         {
             case ProvisioningMode.Visible: await RunVisibleAsync(cts, isUpdateCommand); break;
             case ProvisioningMode.Silent:  await RunSilentAsync(cts);  break;
-            // None — сознательно ничего.
+            // None: intentionally do nothing.
         }
     }
 
-    // ── Visible: полная таблица прогресса (установка / update / первый запуск) ──────────────
+    // Visible provisioning shows the full progress table for installation, updates, and first run.
     private async Task RunVisibleAsync(CancellationTokenSource cts, bool force)
     {
         using var http = DownloadManagerFactory.CreateHttpClient(_options);
@@ -82,8 +84,16 @@ public sealed class DataProvisioner
                     t.StartTask();
                     return new Progress<DownloadProgress>(p =>
                     {
-                        if (p.TotalBytes.HasValue && t.MaxValue != p.TotalBytes.Value)
-                            t.MaxValue = p.TotalBytes.Value;
+                        if (p.TotalBytes is > 0)
+                        {
+                            if (t.MaxValue != p.TotalBytes.Value) t.MaxValue = p.TotalBytes.Value;
+                        }
+                        else
+                        {
+                            // No Content-Length: keep the ceiling ahead of the byte count so the bar
+                            // never snaps to 100% before the transfer actually finishes.
+                            t.MaxValue = Math.Max(t.MaxValue, p.BytesDownloaded + 1);
+                        }
                         t.Value = p.BytesDownloaded;
                     });
                 };
@@ -94,20 +104,27 @@ public sealed class DataProvisioner
                 foreach (var r in results)
                 {
                     var t = spectreTaskMap[r.FileName];
+                    // Skipped files never ran the download callback, so their task stayed unstarted
+                    // and stuck at 0%. Start it and fill the bar to the file's real on-disk size so
+                    // every terminal state shows a complete bar with the correct byte total.
+                    if (!t.IsStarted) t.StartTask();
+                    long size = FileSizeOnDisk(r.FileName);
+                    if (size > 0) t.MaxValue = size;
+
                     if (r.Skipped)
                     {
                         t.Description = $"[gray]{Markup.Escape(r.FileName)} (up to date)[/]";
-                        t.Value = 100;
+                        t.Value = t.MaxValue;
                     }
                     else if (r.NotModified)
                     {
                         t.Description = $"[gray]{Markup.Escape(r.FileName)} (not modified)[/]";
-                        t.Value = 100;
+                        t.Value = t.MaxValue;
                     }
                     else if (r.Stale)
                     {
-                        t.Description = $"[yellow]{Markup.Escape(r.FileName)} (stale — update failed: {Markup.Escape(r.ErrorMessage ?? "")})[/]";
-                        t.Value = 100;
+                        t.Description = $"[yellow]{Markup.Escape(r.FileName)} (stale, update failed: {Markup.Escape(r.ErrorMessage ?? "")})[/]";
+                        t.Value = t.MaxValue;
                     }
                     else if (!r.Success)
                     {
@@ -123,6 +140,20 @@ public sealed class DataProvisioner
             });
 
         Console.WriteLine("\nDownload complete.\n");
+    }
+
+    // Actual byte size of a data file on disk, or 0 when it is missing or unreadable.
+    private long FileSizeOnDisk(string fileName)
+    {
+        try
+        {
+            var info = new FileInfo(Path.Combine(_dataDir, fileName));
+            return info.Exists ? info.Length : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     // An ordinary run restores only required data. The update command restores optional data.
@@ -143,12 +174,12 @@ public sealed class DataProvisioner
         var results = await ExecuteWithBypassRetryAsync(
             manager, missingFiles, progressFactory: null, force: false, cts);
 
-        // Тихо: сообщаем только о жёстком провале (файл не обновился и нет валидной копии).
+        // Quiet mode: report only a hard failure (the file did not update and there is no valid copy).
         if (results.Any(r => !r.Success || r.Stale) && !cts.IsCancellationRequested)
             AnsiConsole.MarkupLine("[dim]Some data updates failed; using cached copies.[/]");
     }
 
-    // ── Общее ядро: system-route загрузка + retry по физическому интерфейсу (bypass VPN) ─────
+    // The shared download path retries over the physical interface after the system route fails.
     private async Task<IReadOnlyList<FileDownloadResult>> ExecuteWithBypassRetryAsync(
         DownloadManager manager,
         IReadOnlyList<FileDescriptor> files,
@@ -175,8 +206,8 @@ public sealed class DataProvisioner
                         _options, progressFactory, force,
                         maxDegreeOfParallelism: 3, cancellationToken: cts.Token);
 
-                    // IN-04: контракт не гарантирован на границе модуля — если retry-набор не
-                    // содержит файла, оставляем исходный результат вместо исключения.
+                    // IN-04: the contract is not guaranteed across the module boundary. If the retry
+                    // set does not contain a file, keep the original result instead of throwing.
                     results = results
                         .Select(r => r.Success && !r.Stale
                             ? r

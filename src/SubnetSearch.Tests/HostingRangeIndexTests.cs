@@ -4,8 +4,8 @@ using SubnetSearch.Core.Utilities;
 
 namespace SubnetSearch.Tests;
 
-// HostingRangeIndex: агрегирует диапазоны дата-центров из трёх источников (ipcat CSV,
-// rezmoss JSON, jhassine CSV) и ищет провайдера по IP бинарным поиском.
+// HostingRangeIndex combines datacenter ranges from ipcat CSV, rezmoss JSON, and jhassine CSV,
+// then finds a provider by IP through binary search.
 public class HostingRangeIndexTests : IDisposable
 {
     private readonly string _dir;
@@ -23,7 +23,7 @@ public class HostingRangeIndexTests : IDisposable
     [Fact]
     public async Task Load_ReadsIpcatCsv_AndFinds()
     {
-        // ipcat: startIp,endIp,"provider","website" (IP без кавычек, provider/website в кавычках)
+        // ipcat stores unquoted IPs followed by quoted provider and website fields.
         Write("ipcat-datacenters.csv",
             "1.2.3.0,1.2.3.255,\"AcmeCloud\",\"acme.example\"\n");
         var index = new HostingRangeIndex();
@@ -64,7 +64,7 @@ public class HostingRangeIndexTests : IDisposable
     [Fact]
     public async Task Load_ReadsJhassineCsv_SkipsHeader()
     {
-        // jhassine: header + rows, cidr в col0, vendor в col3
+        // jhassine stores CIDR in column 0 and vendor in column 3 after a header row.
         Write("server-ip-addresses.csv",
             "cidr,region,service,vendor\n" +
             "\"9.9.9.0/24\",\"eu\",\"compute\",\"JhassineVendor\"\n");
@@ -99,7 +99,7 @@ public class HostingRangeIndexTests : IDisposable
     }
 
     [Fact]
-    public async Task Load_NoFiles_EmptyIndex() // краевой случай: источников нет
+    public async Task Load_NoFiles_EmptyIndex()
     {
         var index = new HostingRangeIndex();
         await index.LoadAsync(_dir);
@@ -127,7 +127,7 @@ public class HostingRangeIndexTests : IDisposable
         File.WriteAllText(Path.Combine(cacheDir, "hosting-index-v1.bin"), "not a valid binary cache");
 
         var index = new HostingRangeIndex(cacheDir);
-        await index.LoadAsync(_dir); // corrupt cache → TryReadCache fails → rebuild from CSV
+        await index.LoadAsync(_dir); // A corrupt cache is rebuilt from CSV.
 
         index.Find(IpConverter.IpToUint("10.0.0.5"))!.Value.ProviderName.Should().Be("H");
     }

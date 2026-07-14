@@ -21,7 +21,7 @@ public class HostingTypeResolver : IHostingTypeResolver
         string? orgName,
         CancellationToken cancellationToken = default)
     {
-        // Слой 1: PTR-запись — наиболее специфичный сигнал для конкретного IP.
+        // Layer 1: the PTR record, the most specific signal for a given IP.
         string? ptr = null;
         if (IPAddress.TryParse(ipAddress, out var ip))
             ptr = await _dnsResolver.ReverseDnsAsync(ip, cancellationToken);
@@ -40,7 +40,7 @@ public class HostingTypeResolver : IHostingTypeResolver
         if (fromPtr.HasValue)
             return fromPtr.Value;
 
-        // Слой 2: PeeringDB info_type — структурированные данные об ASN.
+        // Layer 2: PeeringDB info_type, structured data about the ASN.
         if (asn.HasValue)
         {
             var info = await _websiteResolver.GetNetworkInfoFromPeeringDbAsync(asn.Value, cancellationToken);
@@ -52,14 +52,14 @@ public class HostingTypeResolver : IHostingTypeResolver
             }
         }
 
-        // Слой 3: ключевые слова в названии организации — fallback.
+        // Layer 3: keywords in the organization name, as a fallback.
         return ClassificationRules.ResolveHostingType(orgName) ?? HostingType.Unknown;
     }
 
     private static HostingType MapInfoType(string infoType) => infoType.ToLowerInvariant() switch
     {
-        // "Content" — CDN или облако; PTR на шаге 1 должен был уже различить,
-        // поэтому здесь возвращаем Cloud как обобщённый «хостинг контента».
+        // "Content" means CDN or cloud; the PTR in step 1 should already have told them apart,
+        // so here we return Cloud as a general "content hosting" bucket.
         "content"    => HostingType.Cloud,
         "hosting"    => HostingType.Vps,
         "enterprise" => HostingType.Colocation,

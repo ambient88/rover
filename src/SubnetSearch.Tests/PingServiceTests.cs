@@ -3,10 +3,9 @@ using SubnetSearch.Network;
 
 namespace SubnetSearch.Tests;
 
-// Аргументы ping должны привязывать источник к физическому интерфейсу, минуя VPN:
-// Windows: -S <src IP> (без него VPN-клиент фабрикует ICMP-ответы <1ms TTL=128 на ЛЮБОЙ
-// адрес — доказано 2026-07-04: 8.8.8.8 через VPN = 0ms/TTL 128, через -S = 25ms/TTL 110).
-// Linux/macOS: -I <iface> (уже было).
+// Ping binds to the physical interface to bypass VPN routing.
+// Windows uses -S with the source IP because some VPN clients fabricate sub-millisecond ICMP replies.
+// Linux and macOS use -I with the interface name.
 public class PingServiceTests
 {
     [Fact]
@@ -49,9 +48,8 @@ public class PingServiceTests
         args.Should().Be("-c 4 -W 1 8.8.8.8");
     }
 
-    // ── Parse: локале-независимый разбор вывода ping.exe (WR-07) ──
-    // До фикса регексы матчили только английский вывод; на локализованной Windows
-    // каждый хост считался silent и кэшировался как silent на 12 часов.
+    // ping.exe output parsing must not depend on the operating system locale.
+    // English-only patterns previously marked every host silent on localized Windows systems.
 
     private const string WindowsPingOutputEnglish = """
         Pinging 8.8.8.8 with 32 bytes of data:
@@ -75,7 +73,7 @@ public class PingServiceTests
         """;
 
     [Fact]
-    public void Parse_WindowsEnglishOutput_ExtractsRttAndLoss() // английская локаль (регресс)
+    public void Parse_WindowsEnglishOutput_ExtractsRttAndLoss() // English locale regression coverage.
     {
         var stats = PingService.Parse(WindowsPingOutputEnglish, isWindows: true);
 
@@ -87,7 +85,7 @@ public class PingServiceTests
     }
 
     [Fact]
-    public void Parse_WindowsRussianOutput_ExtractsRttAndLoss() // локализованный ping.exe (WR-07)
+    public void Parse_WindowsRussianOutput_ExtractsRttAndLoss() // Localized ping.exe output.
     {
         var stats = PingService.Parse(WindowsPingOutputRussian, isWindows: true);
 
@@ -99,7 +97,7 @@ public class PingServiceTests
     }
 
     [Fact]
-    public void Parse_WindowsSilentHost_ReturnsNull() // «Request timed out» — строки RTT нет
+    public void Parse_WindowsSilentHost_ReturnsNull() // A timeout response has no RTT line.
     {
         const string output = """
             Pinging 10.255.255.1 with 32 bytes of data:
@@ -113,7 +111,7 @@ public class PingServiceTests
     }
 
     [Fact]
-    public void Parse_LinuxOutput_ExtractsRttAndLoss() // Unix-ветка не сломана фиксом
+    public void Parse_LinuxOutput_ExtractsRttAndLoss() // Preserve Unix output parsing.
     {
         const string output = """
             PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
@@ -134,7 +132,7 @@ public class PingServiceTests
     }
 
     [Fact]
-    public void Parse_EmptyOutput_ReturnsNull() // Process.Start вернул null → пустой вывод (WR-03)
+    public void Parse_EmptyOutput_ReturnsNull() // A failed process start can produce empty output.
     {
         PingService.Parse("", isWindows: true).Should().BeNull();
         PingService.Parse("", isWindows: false).Should().BeNull();

@@ -29,7 +29,7 @@ public class SpamhausDropClientFetchTests : IDisposable
         var handler = TestHttpMessageHandler.Always(HttpStatusCode.OK, "; only comments\n");
         var client = new SpamhausDropClient(new HttpClient(handler), _dir);
 
-        await client.LoadAsync(); // parse yields 0 → InvalidDataException is swallowed, set stays empty
+        await client.LoadAsync(); // InvalidDataException leaves the set empty when parsing yields no entries.
 
         client.IsListed(64500).Should().BeFalse();
     }

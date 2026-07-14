@@ -59,7 +59,7 @@ public class ProviderIndexCache(string dataDir)
             foreach (var (cc, asns) in updates)
                 merged[cc] = new CacheEntry(DateTime.UtcNow, [.. asns]);
 
-            // Write to temp file then rename — prevents a corrupt cache if the process is killed mid-write.
+            // Write to a temporary file before renaming it to avoid corruption if the process stops.
             var tmp = CachePath + ".tmp";
             await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(merged), ct);
             File.Move(tmp, CachePath, overwrite: true);

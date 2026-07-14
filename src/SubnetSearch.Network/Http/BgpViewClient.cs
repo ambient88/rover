@@ -4,7 +4,7 @@ namespace SubnetSearch.Network.Http;
 
 // BGP routing data client for prefix discovery.
 // Used as fallback when RIPE Stat returns no prefixes for an ASN.
-// Rate limit: ~45 req/min — enforced via semaphore + inter-request delay.
+// A semaphore and delay enforce the limit of about 45 requests per minute.
 public class BgpViewClient
 {
     private readonly HttpClient _http;

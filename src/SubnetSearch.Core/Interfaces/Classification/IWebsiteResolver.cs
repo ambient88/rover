@@ -8,10 +8,10 @@ public interface IWebsiteResolver
 
     Task<PeeringDbNetworkInfo?> GetNetworkInfoFromPeeringDbAsync(uint asn, CancellationToken cancellationToken = default);
 
-    // Возвращает список имён IXP (точек обмена), в которых участвует ASN.
+    // Returns the names of the IXPs the ASN participates in.
     Task<IReadOnlyList<string>?> GetIxLocationsAsync(uint asn, CancellationToken cancellationToken = default);
 
-    // Default: достаёт только сайт из общего кешированного запроса.
+    // Default: pulls only the website from the shared cached request.
     async Task<string?> GetWebsiteFromPeeringDbAsync(uint asn, CancellationToken cancellationToken = default)
     {
         var info = await GetNetworkInfoFromPeeringDbAsync(asn, cancellationToken).ConfigureAwait(false);

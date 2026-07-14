@@ -3,15 +3,14 @@ using FluentAssertions;
 
 namespace SubnetSearch.Tests;
 
-// End-to-end тесты CLI: запускаем реальный собранный бинарь rover подпроцессом и проверяем
-// код возврата и вывод. Проверяются пути с немедленным выходом (без сети): version, help,
-// валидация аргументов. CLI собирается через build-order ProjectReference (см. .csproj).
+// End-to-end CLI tests run the built rover binary as a child process and verify its exit code and output.
+// They cover immediate offline paths such as version, help, and argument validation.
 public class CliEndToEndTests
 {
-    // Ищет собранный rover (rover.exe на Windows, иначе rover.dll) в bin CLI-проекта.
+    // Find rover.exe on Windows or rover.dll on other platforms in the CLI build output.
     private static string LocateCliBinDir()
     {
-        // База тестов: ...\src\SubnetSearch.Tests\bin\<Config>\net8.0\
+        // The test output path ends with src/SubnetSearch.Tests/bin/<Config>/net8.0.
         var baseDir = AppContext.BaseDirectory;
         var cliDir = baseDir.Replace(
             $"{Path.DirectorySeparatorChar}SubnetSearch.Tests{Path.DirectorySeparatorChar}",
@@ -20,7 +19,7 @@ public class CliEndToEndTests
             (File.Exists(Path.Combine(cliDir, "rover.dll")) || File.Exists(Path.Combine(cliDir, "rover.exe"))))
             return cliDir;
 
-        // Фолбэк: ищем самый свежий rover.dll под bin CLI-проекта.
+        // Fall back to the newest rover.dll under the CLI project build directory.
         var cliBinRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "SubnetSearch.Cli", "bin"));
         if (Directory.Exists(cliBinRoot))
         {
@@ -87,7 +86,7 @@ public class CliEndToEndTests
     }
 
     [Fact]
-    public void UnknownMode_ExitsOneWithError() // краевой случай: неизвестный режим
+    public void UnknownMode_ExitsOneWithError()
     {
         var (exit, output) = RunCli("bogus-mode");
 
@@ -96,7 +95,7 @@ public class CliEndToEndTests
     }
 
     [Fact]
-    public void SingleIp_MissingArgument_ExitsOneWithError() // краевой случай: -a без IP
+    public void SingleIp_MissingArgument_ExitsOneWithError()
     {
         var (exit, output) = RunCli("-a");
 
@@ -104,8 +103,8 @@ public class CliEndToEndTests
         output.Should().Contain("IP address");
     }
 
-    // F17: a global flag before the mode must still route to that mode, not fail as "Unknown mode".
-    // Regression for `rover --whois -a 8.8.8.8` → "Unknown mode: --whois".
+    // A global flag before the mode must still route to that mode.
+    // Covers the former "Unknown mode: --whois" failure for `rover --whois -a 8.8.8.8`.
     [Fact]
     public void FlagBeforeMode_RoutesToMode_NotUnknownMode()
     {
@@ -117,7 +116,7 @@ public class CliEndToEndTests
     }
 
     [Fact]
-    public void Recommend_InvalidPreset_ExitsOneWithError() // краевой случай: невалидный пресет
+    public void Recommend_InvalidPreset_ExitsOneWithError()
     {
         var (exit, output) = RunCli("-r", "--preset", "nope");
 
@@ -126,7 +125,7 @@ public class CliEndToEndTests
     }
 
     [Fact]
-    public void Recommend_InvalidMaxPing_ExitsOneWithError() // краевой случай: нечисловой --max-ping
+    public void Recommend_InvalidMaxPing_ExitsOneWithError()
     {
         var (exit, output) = RunCli("-r", "--max-ping", "abc");
 

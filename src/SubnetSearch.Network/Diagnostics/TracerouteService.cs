@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Network;
 
-// Traceroute over the OS traceroute binary / raw sockets — integration/manual-tested only.
+// Runs traceroute through the operating system binary or raw sockets. This requires integration or manual testing.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class TracerouteService : ITracerouteService
 {

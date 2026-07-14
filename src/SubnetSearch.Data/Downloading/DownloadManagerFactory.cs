@@ -6,7 +6,7 @@ namespace SubnetSearch.Data;
 public static class DownloadManagerFactory
 {
     // bgp.tools requires a non-default User-Agent identifying the client with a contact
-    // ("Default user agents are not supported" — https://bgp.tools/kb/api).
+    // The service rejects default user agents. See https://bgp.tools/kb/api.
     // The same UA is sent to all download hosts.
     public const string UserAgent =
         "SubnetSearch/1.0 (github.com/ambient88/rover; contact: thriilerchiller123@gmail.com)";
@@ -53,7 +53,7 @@ public static class DownloadManagerFactory
         var now = DateTime.UtcNow;
         string dbIpUrl = $"https://download.db-ip.com/free/dbip-city-lite-{now:yyyy-MM}.mmdb.gz";
 
-        // MinSize guards against empty/truncated downloads only — integrity (gzip/json) is primary.
+        // MinSize only catches empty or truncated downloads. Format validation remains the primary integrity check.
         var files = new List<FileDescriptor>
         {
             new("https://iptoasn.com/data/ip2asn-v4.tsv.gz",                                                                         "ip2asn-v4.tsv.gz",                4_000_000,  TimeSpan.FromDays(7)),

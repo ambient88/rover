@@ -7,7 +7,7 @@ public static class CaidaClassificationLoader
     // Loads CAIDA AS classification from a gzipped pipe-delimited text file.
     // File format: <asn>|<source>|<class>  (comment lines start with #)
     // Classification values: Content, Enterprise, Transit/Access
-    // Returns empty dict when file is missing or malformed — callers degrade gracefully.
+    // Returns an empty dictionary for a missing or malformed file so callers can continue.
     public static async Task<IReadOnlyDictionary<uint, string>> LoadAsync(string gzipFilePath)
     {
         var result = new Dictionary<uint, string>();
@@ -25,7 +25,7 @@ public static class CaidaClassificationLoader
                 var parts = line.Split('|');
                 if (parts.Length < 3) continue;
                 if (!uint.TryParse(parts[0].Trim(), out var asn)) continue;
-                var cls = parts[2].Trim(); // column 2 = class per CAIDA spec (asn|source|class)
+                var cls = parts[2].Trim(); // CAIDA stores the class in column 2.
                 if (!string.IsNullOrEmpty(cls))
                     result[asn] = cls;
             }
@@ -33,7 +33,7 @@ public static class CaidaClassificationLoader
         catch (Exception ex) when (ex is IOException or InvalidDataException
                                       or FormatException or UnauthorizedAccessException)
         {
-            // Degrade gracefully — callers treat empty dict as "no CAIDA data available"
+            // Callers treat an empty dictionary as unavailable CAIDA data.
         }
         return result;
     }

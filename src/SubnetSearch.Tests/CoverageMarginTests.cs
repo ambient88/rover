@@ -11,7 +11,7 @@ namespace SubnetSearch.Tests;
 // Deterministic (no cache / no parallel-race) tests that lock coverage safely above the target.
 public class CoverageMarginTests
 {
-    // ── WhoisResolver: remaining RIR org-field branches ──
+    // Remaining WhoisResolver organization field branches.
     [Fact]
     public void Whois_Afrinic_UsesDescr()
     {
@@ -27,7 +27,7 @@ public class CoverageMarginTests
         r!.Organization.Should().Be("EXAMPLE-NET");
     }
 
-    // ── IpListAnalyzer.IsPublicAddress: IPv6 branches ──
+    // IPv6 branches in IpListAnalyzer.IsPublicAddress.
     [Theory]
     [InlineData("2606:4700:4700::1111", true)]   // public IPv6
     [InlineData("fd00::1", false)]                // ULA (fc00::/7)
@@ -36,7 +36,7 @@ public class CoverageMarginTests
     public void IsPublicAddress_Ipv6(string ip, bool expected)
         => IpListAnalyzer.IsPublicAddress(IPAddress.Parse(ip)).Should().Be(expected);
 
-    // ── ProviderScanner: RIPE-failure degradation (numeric ASN, all upstreams 503) ──
+    // ProviderScanner behavior when RIPE requests fail for a numeric ASN.
     private sealed class NullWebsiteResolver : IWebsiteResolver
     {
         public string? GetWebsite(uint? asn, string? organization, string? whoisWebsite = null) => null;
@@ -61,12 +61,12 @@ public class CoverageMarginTests
         result.TotalIpCount.Should().Be(0);
     }
 
-    // ── ProviderScanner.CalcIpCount /0 boundary ──
+    // The /0 boundary in ProviderScanner.CalcIpCount.
     [Fact]
     public void ProviderScanner_CalcIpCount_SlashZero()
         => ProviderScanner.CalcIpCount("0.0.0.0/0").Should().Be(4294967296L);
 
-    // ── RipeStatClient: additional deterministic HTTP paths ──
+    // Additional deterministic HTTP paths in RipeStatClient.
     private static RipeStatClient Ripe(string body)
         => new(new HttpClient(TestHttpMessageHandler.Always(HttpStatusCode.OK, body)));
 
@@ -110,7 +110,7 @@ public class CoverageMarginTests
         client.IsKnownEmpty(1).Should().BeFalse("no cache configured");
     }
 
-    // ── IpListAnalyzer pure helpers ──
+    // Pure IpListAnalyzer helper methods.
     [Fact]
     public void RewriteGitHubUrl_NonBlobUrl_Unchanged()
         => IpListAnalyzer.RewriteGitHubUrl("https://example.com/list.txt")

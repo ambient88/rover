@@ -6,7 +6,7 @@ namespace SubnetSearch.Tests;
 // Parsing tests for the api.ipapi.is response shapes.
 // ASN queries (?q=AS123) return the ASN fields at the ROOT of the document ("asn" is a number).
 // IP queries  (?q=1.2.3.4) return them nested under an "asn" OBJECT.
-// abuser_score is a string like "0.0013 (Low)" — the numeric prefix must be extracted.
+// abuser_score uses strings such as "0.0013 (Low)", so the parser extracts the numeric prefix.
 public class IpapiIsClientTests
 {
     [Fact]

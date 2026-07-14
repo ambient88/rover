@@ -3,17 +3,17 @@ using System.Text.RegularExpressions;
 
 namespace SubnetSearch.Classification;
 
-// Все правила классификации сосредоточены здесь, чтобы их можно было менять
-// без касания логики классификатора (OCP).
+// All classification rules live here so they can be changed
+// without touching the classifier logic (OCP).
 internal static class ClassificationRules
 {
-    // HostingType.Unknown signals that no pattern matched — callers move to the next layer.
+    // HostingType.Unknown means no pattern matched, so callers move to the next layer.
     // Patterns are ordered from most specific to least specific.
     private const RegexOptions RxOpts = RegexOptions.IgnoreCase | RegexOptions.Compiled;
 
     private static readonly (Regex Pattern, HostingType Type)[] PtrPatterns =
     [
-        // CDN — well-known provider domains
+        // Well-known CDN provider domains.
         (new Regex(@"\.cloudfront\.net\.?$",         RxOpts), HostingType.Cdn),
         (new Regex(@"\.akamaiedge\.net\.?$",         RxOpts), HostingType.Cdn),
         (new Regex(@"\.akadns\.net\.?$",             RxOpts), HostingType.Cdn),
@@ -25,7 +25,7 @@ internal static class ClassificationRules
         (new Regex(@"\.b-cdn\.net\.?$",              RxOpts), HostingType.Cdn),
         (new Regex(@"(?:^|\.|\-)cdn(?:\.|-)|\bcdn\b",RxOpts), HostingType.Cdn),
 
-        // Cloud — well-known cloud platforms
+        // Well-known cloud platforms.
         (new Regex(@"\.compute\.amazonaws\.com\.?$", RxOpts), HostingType.Cloud),
         (new Regex(@"\.ec2\.internal\.?$",           RxOpts), HostingType.Cloud),
         (new Regex(@"\.cloudapp\.azure\.com\.?$",    RxOpts), HostingType.Cloud),
@@ -37,16 +37,16 @@ internal static class ClassificationRules
         (new Regex(@"\.linode\.com\.?$",             RxOpts), HostingType.Cloud),
         (new Regex(@"\.digitaloceanspaces\.com\.?$", RxOpts), HostingType.Cloud),
 
-        // VPS — delimiters required to avoid false positives like "vpstar", "advds"
+        // Delimiters prevent false positives such as "vpstar" and "advds".
         (new Regex(@"(?:^|[.-])vps(?:[.-]|\d)",      RxOpts), HostingType.Vps),
         (new Regex(@"(?:^|[.-])vds(?:[.-]|\d)",      RxOpts), HostingType.Vps),
         (new Regex(@"droplet\.",                      RxOpts), HostingType.Vps),
         (new Regex(@"\.vps\.ovh\.net\.?$",           RxOpts), HostingType.Vps),
         // Generic cloud instance patterns: instance337049.waicore.network, vm-42.provider.com
-        // All anchored at ^ — avoids matching ISP infrastructure mid-hostname (vm-agg.isp.net).
+        // Each pattern is anchored at ^ to avoid matching ISP infrastructure inside a hostname.
         (new Regex(@"^instance\d+\.",                RxOpts), HostingType.Vps),
         (new Regex(@"^vm-?\d+[.-]",                 RxOpts), HostingType.Vps),
-        // s<id>.<domain> — numbered server IDs used by small hosters (s263723.h2nexus.net).
+        // Small hosting providers often use numbered server IDs such as s263723.h2nexus.net.
         // Requires 3+ digits to avoid collisions with short generic names (s1., s12.).
         (new Regex(@"^s\d{3,}\.",                   RxOpts), HostingType.Vps),
 
@@ -82,7 +82,7 @@ internal static class ClassificationRules
         "Facebook, Inc.",
     };
 
-    // ASNs of well-known CDN providers — shown as Type=CDN even when IsHosting=false.
+    // ASNs of known CDN providers are shown as Type=CDN even when IsHosting is false.
     public static readonly HashSet<uint> CdnAsns = [
         13335,  // Cloudflare, Inc.
         209242, // Cloudflare WARP
@@ -129,7 +129,7 @@ internal static class ClassificationRules
         ("colo",      HostingType.Colocation),
     ];
 
-    // Tier-1 and major backbone providers — their IPs are carrier infrastructure,
+    // Tier-1 and major backbone provider IPs belong to carrier infrastructure,
     // not rentable server space.
     public static readonly HashSet<uint> BackboneAsns = [
         174,    // Cogent
@@ -151,7 +151,7 @@ internal static class ClassificationRules
         12956,  // Telefonica
     ];
 
-    // Router interface PTR patterns — indicate backbone infrastructure IPs, not rentable servers.
+    // Router interface PTR patterns identify backbone infrastructure, not rentable servers.
     private static readonly Regex[] RouterPtrPatterns =
     [
         new Regex(@"^ae\d+\.",           RxOpts),  // Aggregated Ethernet (GTT: ae2.cr6-cph1...)
@@ -174,9 +174,9 @@ internal static class ClassificationRules
     }
 
     // PeeringDB info_type values that unambiguously indicate hosting.
-    // NSP (Network Service Provider) = ISP/transit carriers (Rostelecom, AT&T, etc.) —
+    // Network Service Providers include ISP and transit carriers such as Rostelecom and AT&T.
     // their residential customers are not server renters, so NSP is excluded here.
-    // ISP, IXP, Educational, Non-Profit — not hosting.
+    // ISP, IXP, educational, and non-profit networks are not hosting providers.
     public static bool IsHostingPeeringDbType(string? infoType) =>
         infoType?.ToLowerInvariant() is "hosting" or "content";
 
@@ -200,7 +200,7 @@ internal static class ClassificationRules
         return HostingType.Unknown;
     }
 
-    // Returns null when no pattern matched — signals the pipeline to move to the next layer.
+    // A null result tells the pipeline to move to the next layer.
     public static HostingType? ResolveHostingTypeFromPtr(string? ptr)
     {
         if (string.IsNullOrWhiteSpace(ptr))

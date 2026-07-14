@@ -6,7 +6,7 @@ using System.Net;
 
 namespace SubnetSearch.Classification;
 
-// Thin wrapper over the MaxMind/DB-IP reader (file + native lookups) — integration-tested only.
+// Thin wrapper over the MaxMind and DB-IP reader. File and native lookups require integration testing.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class DbIpGeolocator : IGeolocator, IDisposable
 {

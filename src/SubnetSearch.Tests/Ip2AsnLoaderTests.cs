@@ -5,8 +5,7 @@ using SubnetSearch.Core.Utilities;
 
 namespace SubnetSearch.Tests;
 
-// Ip2AsnLoader: разбор gzip-TSV ip2asn (start end asn country descr), пропуск комментариев
-// и коротких строк; пустой результат → InvalidDataException.
+// Ip2AsnLoader parses gzip TSV rows, skips comments and short lines, and rejects an empty result.
 public class Ip2AsnLoaderTests
 {
     private static string WriteGzip(string content)
@@ -46,8 +45,8 @@ public class Ip2AsnLoaderTests
     {
         var path = WriteGzip(
             "1.0.0.0\t1.0.0.255\t13335\tUS\tOK\n" +
-            "too\tshort\n" +                        // < 5 колонок
-            "2.0.0.0\t2.0.0.255\tNaN\tUS\tBadAsn\n"); // нечисловой ASN
+            "too\tshort\n" +                        // Fewer than five columns.
+            "2.0.0.0\t2.0.0.255\tNaN\tUS\tBadAsn\n"); // ASN is not numeric.
         try
         {
             var records = await new Ip2AsnLoader().LoadAsync(path);
@@ -58,7 +57,7 @@ public class Ip2AsnLoaderTests
     }
 
     [Fact]
-    public async Task Load_NoRecords_ThrowsInvalidData() // краевой случай: файл есть, данных нет
+    public async Task Load_NoRecords_ThrowsInvalidData()
     {
         var path = WriteGzip("# only a header\n# nothing else\n");
         try

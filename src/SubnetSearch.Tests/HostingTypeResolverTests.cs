@@ -6,8 +6,8 @@ using SubnetSearch.Core.Models.Classification;
 
 namespace SubnetSearch.Tests;
 
-// HostingTypeResolver: трёхслойное определение типа хостинга (PTR → PeeringDB info_type →
-// ключевые слова в имени). Здесь проверяется слой PeeringDB и маппинг info_type.
+// HostingTypeResolver uses PTR, PeeringDB info_type, and organization name keywords in order.
+// These tests cover the PeeringDB layer and info_type mapping.
 public class HostingTypeResolverTests
 {
     private sealed class StubDns : IDnsResolver
@@ -40,7 +40,7 @@ public class HostingTypeResolverTests
     [InlineData("content",    HostingType.Cloud)]
     public async Task Resolve_MapsPeeringDbInfoType(string infoType, HostingType expected)
     {
-        // PTR = null → слой 1 не срабатывает; результат берётся из PeeringDB info_type.
+        // A missing PTR skips the first layer, so PeeringDB info_type decides the result.
         var sut = Sut(ptr: null, info: new PeeringDbNetworkInfo(Website: null, InfoType: infoType));
 
         var result = await sut.ResolveAsync("1.2.3.4", asn: 24940, orgName: null);
@@ -59,7 +59,7 @@ public class HostingTypeResolverTests
     }
 
     [Fact]
-    public async Task Resolve_NoAsn_NoOrg_ReturnsUnknown() // краевой случай: нет данных ни на одном слое
+    public async Task Resolve_NoAsn_NoOrg_ReturnsUnknown()
     {
         var sut = Sut(ptr: null, info: null);
 
@@ -71,7 +71,7 @@ public class HostingTypeResolverTests
     [Fact]
     public async Task Resolve_NullInfoType_FallsThrough()
     {
-        // PeeringDB вернул запись без info_type → слой 2 пропускается, орг-имя пустое → Unknown.
+        // A PeeringDB record without info_type skips the second layer. An empty organization name leaves Unknown.
         var sut = Sut(ptr: null, info: new PeeringDbNetworkInfo(Website: "x.example", InfoType: null));
 
         (await sut.ResolveAsync("1.2.3.4", asn: 24940, orgName: null)).Should().Be(HostingType.Unknown);

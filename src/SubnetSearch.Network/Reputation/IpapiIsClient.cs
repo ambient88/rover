@@ -12,8 +12,8 @@ public class IpapiIsClient(HttpClient http)
 
     // Fetches both abuser_score and ASN type in one request.
     // type values: "hosting", "isp", "business", "education", "government", "inactive"
-    // NOTE: the legacy endpoint https://ipapi.is/json/?asn=… returns 502 permanently —
-    // the current API lives at https://api.ipapi.is/?q=… (same for IP queries).
+    // The legacy endpoint https://ipapi.is/json/?asn=... now returns 502 permanently.
+    // The current API uses https://api.ipapi.is/?q=... for both ASN and IP queries.
     public Task<AsnInfo> GetAsnInfoAsync(uint asn, CancellationToken ct = default)
         => FetchAsnInfoAsync($"https://api.ipapi.is/?q=AS{asn}", ct);
 
@@ -41,7 +41,7 @@ public class IpapiIsClient(HttpClient http)
     // Response shapes of api.ipapi.is:
     //   ASN query (?q=AS123): ASN fields at the ROOT ("asn" is a plain number).
     //   IP query  (?q=1.2.3.4): ASN fields nested under an "asn" OBJECT.
-    // abuser_score is usually a string like "0.0013 (Low)" — extract the numeric prefix.
+    // abuser_score is usually a string like "0.0013 (Low)", so extract the numeric prefix.
     public static AsnInfo ParseAsnInfo(string json)
     {
         using var doc = JsonDocument.Parse(json);
@@ -62,7 +62,7 @@ public class IpapiIsClient(HttpClient http)
                 abuserScore = scoreEl.GetDouble();
             else if (scoreEl.ValueKind == JsonValueKind.String)
             {
-                // "0.0013 (Low)" → take the leading numeric token.
+                // For "0.0013 (Low)", take the leading numeric token.
                 var s = scoreEl.GetString();
                 var firstToken = s?.Split(' ', 2)[0];
                 if (double.TryParse(firstToken,

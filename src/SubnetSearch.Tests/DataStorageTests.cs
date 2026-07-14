@@ -8,8 +8,7 @@ using SubnetSearch.Data;
 
 namespace SubnetSearch.Tests;
 
-// Storage-слой Data: LocalFileStorage (безопасные пути, валидация, атомарная запись),
-// FileMetadataStore (round-trip, staleness) и проверки целостности (gzip/json/zip).
+// Covers safe storage paths, validation, atomic writes, metadata freshness, and format integrity checks.
 public class DataStorageTests : IDisposable
 {
     private readonly string _dir;
@@ -63,7 +62,7 @@ public class DataStorageTests : IDisposable
         }
     }
 
-    // ── LocalFileStorage ──
+    // LocalFileStorage tests.
 
     [Fact]
     public async Task Storage_Save_WritesFile()
@@ -228,7 +227,7 @@ public class DataStorageTests : IDisposable
             .Should().Throw<ArgumentException>();
     }
 
-    // ── FileMetadataStore ──
+    // FileMetadataStore tests.
 
     [Fact]
     public void Metadata_SaveThenLoad_RoundTrips()
@@ -249,7 +248,7 @@ public class DataStorageTests : IDisposable
         => new FileMetadataStore(_dir).Load("absent.bin").Should().BeNull();
 
     [Fact]
-    public void Metadata_Load_Corrupt_ReturnsNull() // краевой случай: битый meta-файл
+    public void Metadata_Load_Corrupt_ReturnsNull()
     {
         File.WriteAllText(Path.Combine(_dir, "x.bin.meta.json"), "{ not json ]");
 
@@ -278,7 +277,7 @@ public class DataStorageTests : IDisposable
         store.IsStale("f.bin", TimeSpan.FromDays(1)).Should().BeTrue();
     }
 
-    // ── Integrity checkers ──
+    // Integrity checker tests.
 
     [Fact]
     public void GZipChecker_ValidGzip_True()
@@ -300,7 +299,7 @@ public class DataStorageTests : IDisposable
         new GZipIntegrityChecker().IsValid(path).Should().BeFalse();
     }
 
-    // F8 regression: a truncated archive decompresses its first byte fine but has no valid gzip
+    // A truncated archive can decompress its first byte while still lacking a valid gzip
     // trailer. The old one-byte check waved it through; a full read must reject it. Incompressible
     // random data ensures the truncation cuts the deflate body mid-block (a guaranteed decode error).
     [Fact]

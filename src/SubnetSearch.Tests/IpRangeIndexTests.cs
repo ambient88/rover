@@ -5,7 +5,7 @@ using SubnetSearch.Core.Utilities;
 
 namespace SubnetSearch.Tests;
 
-// IpRangeIndex: бинарный поиск ASN-записи по числовому IP в отсортированном массиве диапазонов.
+// IpRangeIndex uses binary search to find an ASN record in sorted numeric IP ranges.
 public class IpRangeIndexTests
 {
     private static Ip2AsnRecord Rec(string start, string end, uint asn) => new()
@@ -20,7 +20,7 @@ public class IpRangeIndexTests
     private static IpRangeIndex Index() => new(new[]
     {
         Rec("8.8.8.0",  "8.8.8.255",  15169),
-        Rec("1.0.0.0",  "1.0.0.255",  13335),   // намеренно не по порядку — индекс сам сортирует
+        Rec("1.0.0.0",  "1.0.0.255",  13335),   // The index sorts out-of-order input.
         Rec("10.0.0.0", "10.255.255.255", 64512),
     });
 
@@ -36,8 +36,8 @@ public class IpRangeIndexTests
     }
 
     [Theory]
-    [InlineData("1.0.0.0")]     // нижняя граница
-    [InlineData("1.0.0.255")]   // верхняя граница
+    [InlineData("1.0.0.0")]     // Lower boundary.
+    [InlineData("1.0.0.255")]   // Upper boundary.
     public void Find_BoundaryAddresses_AreInclusive(string ip)
     {
         var rec = Index().Find(IpConverter.IpToUint(ip));
@@ -46,12 +46,12 @@ public class IpRangeIndexTests
     }
 
     [Theory]
-    [InlineData("9.9.9.9")]     // между диапазонами
+    [InlineData("9.9.9.9")]     // Between ranges.
     [InlineData("255.255.255.255")]
     public void Find_IpOutsideAnyRange_ReturnsNull(string ip)
         => Index().Find(IpConverter.IpToUint(ip)).Should().BeNull();
 
     [Fact]
-    public void Find_EmptyIndex_ReturnsNull() // краевой случай: пустой индекс
+    public void Find_EmptyIndex_ReturnsNull()
         => new IpRangeIndex(Array.Empty<Ip2AsnRecord>()).Find(123u).Should().BeNull();
 }

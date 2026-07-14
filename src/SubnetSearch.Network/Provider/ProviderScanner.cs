@@ -110,7 +110,7 @@ public class ProviderScanner : IProviderScanner
         );
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // Helper methods.
 
     private IpPrefix EnrichPrefix(string prefix)
     {
@@ -135,7 +135,7 @@ public class ProviderScanner : IProviderScanner
     internal static long CalcIpCount(string prefix)
         => Ipv4RangeMath.CountAddresses(prefix);
 
-    // "SENKO-AS Senko Digital LLC" → ("SENKO-AS", "Senko Digital LLC")
+    // Split "SENKO-AS Senko Digital LLC" into the handle and organization name.
     internal static (string? Handle, string? Org) ParseHolder(string? holder)
     {
         if (string.IsNullOrWhiteSpace(holder)) return (null, null);
@@ -144,7 +144,7 @@ public class ProviderScanner : IProviderScanner
         return (holder[..idx], holder[(idx + 1)..].Trim());
     }
 
-    // ── ASN resolution ────────────────────────────────────────────────────────
+    // ASN resolution.
 
     private async Task<(uint Asn, IReadOnlyList<RipeStatClient.SearchResult> Candidates)>
         ResolveAsnAsync(string query, CancellationToken ct)

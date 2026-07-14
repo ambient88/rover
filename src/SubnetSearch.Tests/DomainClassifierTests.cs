@@ -6,8 +6,8 @@ using SubnetSearch.Core.Models.Classification;
 
 namespace SubnetSearch.Tests;
 
-// DomainClassifier: резолв IP домена, параллельная классификация каждого IP, reverse DNS и
-// WHOIS домена; вывод хостинг-провайдера и типа сервиса по ключевым словам в домене.
+// DomainClassifier resolves domain IPs, classifies them in parallel, and queries reverse DNS and WHOIS.
+// Hosting provider and service type come from the resolved network data and domain keywords.
 public class DomainClassifierTests
 {
     private sealed class StubDns : IDnsResolver
@@ -43,15 +43,14 @@ public class DomainClassifierTests
     private static DomainWhoisResult Whois(string? registrar, string? host)
         => new(registrar, host, null, null, new[] { "ns1.example" }, "active", null);
 
-    // Regression for F3: a domain registered at GoDaddy but hosted at Hetzner must report Hetzner
-    // as the hosting provider. The registrar stays a separate field and must NOT leak into hosting,
-    // even if the WHOIS record happens to carry a (registrar-conflated) provider string.
+    // A domain registered at GoDaddy but hosted at Hetzner must report Hetzner as the provider.
+    // Registrar data remains separate even when WHOIS contains an unrelated provider string.
     [Fact]
     public async Task Classify_HostingFromIp_RegistrarNeverSubstitutesHosting()
     {
         var dns = new StubDns(new[] { IPAddress.Parse("1.2.3.4") }, ptr: "host.example");
         var ipc = new StubIpClassifier(_ => Hosting("Hetzner"));
-        // WHOIS supplies both a registrar and a (bogus) provider — neither may become the host.
+        // A registrar and unrelated provider from WHOIS must not become the hosting provider.
         var who = new StubWhois(Whois("GoDaddy", "GoDaddy"));
         var sut = new DomainClassifier(ipc, who, dns);
 
@@ -72,7 +71,7 @@ public class DomainClassifierTests
         var ipc = new StubIpClassifier(ip => ip == "1.2.3.4"
             ? new ClassificationResult(false, 111, "NonHostingOrg", "US", null, "t")
             : Hosting("HostingCorp"));
-        var who = new StubWhois(Whois("Reg", host: null)); // WHOIS не дал провайдера
+        var who = new StubWhois(Whois("Reg", host: null)); // WHOIS returned no provider.
         var sut = new DomainClassifier(ipc, who, dns);
 
         var result = await sut.ClassifyDomainAsync("example.com");
@@ -105,7 +104,7 @@ public class DomainClassifierTests
     }
 
     [Fact]
-    public async Task Classify_NoResolvedIps_EmptyResultsAndNullReverseDns() // краевой случай
+    public async Task Classify_NoResolvedIps_EmptyResultsAndNullReverseDns()
     {
         var dns = new StubDns(Array.Empty<IPAddress>(), ptr: "should-not-be-used");
         var sut = new DomainClassifier(new StubIpClassifier(_ => Hosting("x")),

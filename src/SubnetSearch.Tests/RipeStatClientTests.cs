@@ -60,7 +60,7 @@ public class RipeStatClientTests
             v4.Should().Equal("1.2.3.0/24", "5.6.7.0/24");
             v6.Should().Equal("2001:db8::/32");
 
-            // Second call is served from cache — no new HTTP request.
+            // The second call uses the cache and sends no new HTTP request.
             int before = handler.Requests.Count;
             var (ok2, v4b, _) = await client.GetAllPrefixesAsync(64500);
             ok2.Should().BeTrue();

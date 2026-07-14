@@ -3,7 +3,7 @@ using SubnetSearch.Network.Recommend;
 using SubnetSearch.Cli;
 using SubnetSearch.Cli.Commands;
 
-// ================== VERSION / HELP (immediate exit, no downloads) ==================
+// Version and help exit without downloading data.
 if (args.Contains("--version") || args.Contains("-v"))
 {
     HelpText.PrintVersion();
@@ -17,7 +17,7 @@ if (args.Contains("--help") || args.Contains("-h"))
     return 0;
 }
 
-// ================== CONFIG COMMANDS (before any data download) ==================
+// Configuration commands run before data downloads.
 var appConfig = ConfigManager.Load();
 
 if (args.Contains("--list-keys"))
@@ -55,7 +55,7 @@ if (args.Contains("--set-key"))
     return 0;
 }
 
-// ================== ARG VALIDATION (before downloads) ==================
+// Argument validation runs before downloads.
 if (args.Length > 0)
 {
     var (valid, error) = ArgsParser.Validate(args);
@@ -68,8 +68,7 @@ if (args.Length > 0)
     }
 }
 
-// ================== CANCELLATION (Ctrl+C) ==================
-// Registered BEFORE data download so Ctrl+C during the download cancels cleanly.
+// Register cancellation before downloading so Ctrl+C stops the operation cleanly.
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
@@ -77,11 +76,11 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-// ================== BOOTSTRAP (download + config + peeringDb client) ==================
+// Bootstrap data, configuration, and the PeeringDB client.
 var ctx = await AppBootstrap.InitializeAsync(args, appConfig, cts);
 if (ctx is null)
 {
-    // Cancelled during download (Ctrl+C) — preserve the exit-130 semantics.
+    // Preserve exit code 130 when Ctrl+C cancels a download.
     AnsiConsole.MarkupLine("[yellow]Cancelled.[/]");
     return 130;
 }
@@ -89,12 +88,12 @@ if (ctx is null)
 // Router owns the peeringDbHttp lifecycle for the rest of the run (D-08).
 using var peeringDbHttp = ctx.PeeringDbHttp;
 
-// ================== EMPTY-ARGS DEMO ==================
+// Show the demo when no arguments are supplied.
 if (args.Length == 0)
 {
     HelpText.ShowHelp();
-    // Empty-args demo is a separate routing path — it does NOT set up the parallel
-    // PeeringDB status check (Pitfall 4). DemoCommand creates its own peeringDbHttp
+    // The empty-arguments demo uses a separate route and does not initialize the parallel
+    // PeeringDB status check. DemoCommand creates its own PeeringDB client
     // internally and never touches ctx.PeeringDbHttp.
     await new DemoCommand(ctx).ExecuteAsync(cts.Token);
     return 0;

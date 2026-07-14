@@ -4,8 +4,8 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace SubnetSearch.Network.Http;
 
-// TLS handshake probe over a live socket (+ cert-metadata parsing that needs a real certificate)
-// — integration/manual-tested only.
+// Probes a TLS handshake over a live socket and reads metadata from the real certificate.
+// This requires integration or manual testing.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 internal static class TlsProbe
 {

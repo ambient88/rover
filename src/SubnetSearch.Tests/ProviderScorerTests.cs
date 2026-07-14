@@ -94,10 +94,10 @@ public class ProviderScorerTests
         ips.Should().Equal("192.168.1.1", "192.168.1.2", "192.168.1.3");
     }
 
-    // ── Пинг-кэш (D-05, Phase 10): сериализация и round-trip через RipeStatCache ──
+    // Ping cache serialization and RipeStatCache round trips.
 
     [Fact]
-    public void SerializePingOrNull_RoundTripsPopulatedStats() // положительный результат
+    public void SerializePingOrNull_RoundTripsPopulatedStats() // Positive result.
     {
         var stats = new SubnetSearch.Core.Models.Classification.PingStats(1.5, 2.5, 4.0, 33);
         var json  = ProviderScorer.SerializePingOrNull(stats);
@@ -110,14 +110,14 @@ public class ProviderScorerTests
     }
 
     [Fact]
-    public void SerializePingOrNull_RoundTripsNull() // отрицательный результат (молчащий хост)
+    public void SerializePingOrNull_RoundTripsNull() // Negative result for a silent host.
     {
         var json = ProviderScorer.SerializePingOrNull(null);
         ProviderScorer.DeserializePingOrNull(json).Should().BeNull();
     }
 
     [Fact]
-    public void PingCache_HitPath_ReconstructsStatsFromRealCache() // путь попадания без спавна ping
+    public void PingCache_HitPath_ReconstructsStatsFromRealCache() // Cache hit without a new ping process.
     {
         var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
         try
@@ -135,7 +135,7 @@ public class ProviderScorerTests
     }
 
     [Fact]
-    public void PingCache_NegativeHit_SignalsSkipWithoutRePing() // кэшированный молчащий хост
+    public void PingCache_NegativeHit_SignalsSkipWithoutRePing() // Cached silent host.
     {
         var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
         try
@@ -143,7 +143,7 @@ public class ProviderScorerTests
             var cache = new RipeStatCache(dir);
             cache.Set("ping_10.0.0.1", ProviderScorer.SerializePingOrNull(null), TimeSpan.FromMinutes(10));
 
-            // TryGet == true при десериализации в null — сигнал «хост молчит, не пинговать повторно».
+            // A cached null value means the host is silent and should not be pinged again.
             cache.TryGet("ping_10.0.0.1", out var json).Should().BeTrue();
             ProviderScorer.DeserializePingOrNull(json!).Should().BeNull();
         }
@@ -154,17 +154,17 @@ public class ProviderScorerTests
     public void DeserializePingOrNull_ToleratesCorruptJson()
         => ProviderScorer.DeserializePingOrNull("{ not json ]").Should().BeNull();
 
-    // ── WR-08: битый JSON дизамбигуирован от настоящего негативного хита ──
+    // Corrupt JSON is distinct from an authoritative negative cache hit.
 
     [Fact]
-    public void TryDeserializePing_CorruptJson_SignalsCacheMiss() // false → IP уйдёт в пробу
+    public void TryDeserializePing_CorruptJson_SignalsCacheMiss() // False sends the IP to a live probe.
     {
         ProviderScorer.TryDeserializePing("{ not json ]", out var stats).Should().BeFalse();
         stats.Should().BeNull();
     }
 
     [Fact]
-    public void TryDeserializePing_NegativeHit_SignalsKnownSilent() // true + null → хост молчит
+    public void TryDeserializePing_NegativeHit_SignalsKnownSilent() // True with null identifies a silent host.
     {
         var json = ProviderScorer.SerializePingOrNull(null);
         ProviderScorer.TryDeserializePing(json, out var stats).Should().BeTrue();
@@ -172,7 +172,7 @@ public class ProviderScorerTests
     }
 
     [Fact]
-    public void TryDeserializePing_PositiveHit_ReturnsStats() // true + stats → живой хост из кэша
+    public void TryDeserializePing_PositiveHit_ReturnsStats() // True with stats returns a responsive cached host.
     {
         var json = ProviderScorer.SerializePingOrNull(
             new SubnetSearch.Core.Models.Classification.PingStats(1.0, 2.0, 3.0, 0));
@@ -181,24 +181,24 @@ public class ProviderScorerTests
         stats!.AvgMs.Should().Be(2.0);
     }
 
-    // ── Abuse-кэш (Phase 10, «ещё быстрее»): abuser_score ipapi.is кэшируется по ASN ──
+    // ipapi.is abuser_score values are cached by ASN.
 
     [Fact]
-    public void SerializeAbuse_RoundTripsScore() // положительный результат
+    public void SerializeAbuse_RoundTripsScore() // Positive result.
     {
         var json = ProviderScorer.SerializeAbuse(0.0042);
         ProviderScorer.DeserializeAbuseOrNull(json).Should().Be(0.0042);
     }
 
     [Fact]
-    public void SerializeAbuse_RoundTripsNull() // отрицательный результат (нет данных / сбой API)
+    public void SerializeAbuse_RoundTripsNull() // Negative result for missing data or an API failure.
     {
         var json = ProviderScorer.SerializeAbuse(null);
         ProviderScorer.DeserializeAbuseOrNull(json).Should().BeNull();
     }
 
     [Fact]
-    public void AbuseCache_HitPath_ReconstructsScoreFromRealCache() // попадание без HTTP-запроса
+    public void AbuseCache_HitPath_ReconstructsScoreFromRealCache() // Cache hit without an HTTP request.
     {
         var dir = Path.Combine(Path.GetTempPath(), $"scorer-cache-{Guid.NewGuid():N}");
         try

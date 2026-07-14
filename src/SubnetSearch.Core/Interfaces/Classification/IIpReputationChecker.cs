@@ -2,7 +2,7 @@ namespace SubnetSearch.Core.Interfaces.Classification;
 
 public interface IIpReputationChecker
 {
-    // Возвращает количество источников, в которых замечен IP.
-    // 0 — чистый, null — база не загружена.
+    // Returns the number of sources that flagged the IP.
+    // 0 = clean, null = database not loaded.
     int? Check(uint ipInt);
 }

@@ -11,20 +11,20 @@ public record ClassificationResult(
     DateTime? RegistrationDate = null,
     DateTime? UpdatedDate = null,
     string? Status = null,
-    // Шаг 1: базовая сетевая информация
+    // Step 1: basic network information
     string? Ptr = null,
     string? IpRange = null,
     string? Rir = null,
     string? AbuseEmail = null,
-    // Шаг 2: геолокация
+    // Step 2: geolocation
     string? City = null,
     string? Region = null,
     double? Latitude = null,
     double? Longitude = null,
     string? Timezone = null,
-    // Шаг 3: репутация (IPsum)
-    int? ReputationScore = null,  // null = база не загружена, 0 = чистый, >0 = число источников
-    // PeeringDB: пиринги и регионы
+    // Step 3: reputation (IPsum)
+    int? ReputationScore = null,  // null = database not loaded, 0 = clean, >0 = number of sources
+    // PeeringDB: peerings and regions
     int? PeeringCount = null,
     IReadOnlyList<string>? IxLocations = null,
     // HTTP/TLS fingerprint

@@ -3,13 +3,10 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Покрытие механизма per-entry TTL в RipeStatCache (PERF-01, D-07):
-//   - Set(key, data, ttl) round-trips данные через TryGet как для "вечного" TTL
-//     (FromDays(3650)), так и для короткого положительного TTL.
-//   - Независимое истечение: запись с уже истёкшим TTL не возвращается TryGet,
-//     а "вечная" запись, поставленная в тот же момент, — возвращается.
-//   - FlushIfDirtyAsync выселяет истёкшие записи с диска, но сохраняет живые
-//     (проверяется через свежий экземпляр на том же каталоге).
+// Covers independent per-entry TTL behavior in RipeStatCache.
+// Set and TryGet preserve entries with both long and short positive TTL values.
+// Expired entries disappear independently while live entries remain available.
+// FlushIfDirtyAsync removes expired disk entries without dropping live data.
 public class RipeStatCacheTests
 {
     [Fact]
@@ -19,7 +16,7 @@ public class RipeStatCacheTests
         try
         {
             var cache = new RipeStatCache(dir.FullName);
-            // "Навсегда" для RPKI — большой явный per-entry TTL.
+            // RPKI uses an explicitly long per-entry TTL.
             cache.Set("rpki_1234", "0.95", TimeSpan.FromDays(3650));
 
             cache.TryGet("rpki_1234", out var data).Should().BeTrue();
@@ -35,7 +32,7 @@ public class RipeStatCacheTests
         try
         {
             var cache = new RipeStatCache(dir.FullName);
-            // Короткий, но ещё не истёкший TTL — данные должны читаться.
+            // Data remains readable during a short but active TTL.
             cache.Set("ping_192.0.2.1", "42ms", TimeSpan.FromMinutes(10));
 
             cache.TryGet("ping_192.0.2.1", out var data).Should().BeTrue();
@@ -51,23 +48,22 @@ public class RipeStatCacheTests
         try
         {
             var cache = new RipeStatCache(dir.FullName);
-            // Две записи в один и тот же момент: одна уже истекла, другая "вечная".
+            // Create an expired entry and a long-lived entry at the same time.
             cache.Set("expired", "stale", TimeSpan.FromSeconds(-1));
             cache.Set("forever", "fresh", TimeSpan.FromDays(3650));
 
-            // Истёкшая не возвращается...
+            // The expired entry is unavailable.
             cache.TryGet("expired", out var expiredData).Should().BeFalse();
             expiredData.Should().BeNull();
-            // ...а "вечная", поставленная в тот же момент, — возвращается.
+            // The long-lived entry remains available.
             cache.TryGet("forever", out var foreverData).Should().BeTrue();
             foreverData.Should().Be("fresh");
         }
         finally { Directory.Delete(dir.FullName, true); }
     }
 
-    // ── Негативное кэширование BGPView-фолбэка (gap closure Phase 10) ──
-    // RipeStatClient.MarkEmpty/IsKnownEmpty: ASN, пустой и в RIPE Stat, и в BGPView,
-    // помечается pfx0_{asn} и не дёргает троттлённый фолбэк в окне TTL.
+    // Negative BGPView fallback caching uses pfx0_{asn} when both sources confirm no prefixes.
+    // The marker prevents repeated throttled fallback requests during its TTL.
 
     [Fact]
     public void MarkEmpty_IsKnownEmpty_RoundTrip()
@@ -89,18 +85,17 @@ public class RipeStatCacheTests
     [Fact]
     public void IsKnownEmpty_WithoutCache_AlwaysFalse()
     {
-        // Без кэша (cache-less конструирование) фолбэк никогда не пропускается.
+        // Without a cache, the fallback is never skipped.
         var client = new SubnetSearch.Network.RipeStatClient(new HttpClient());
-        client.MarkEmpty(64512); // no-op, не должен бросить
+        client.MarkEmpty(64512); // No-op without an exception.
         client.IsKnownEmpty(64512).Should().BeFalse();
     }
 
     [Fact]
     public void MarkEmpty_ShortTtl_ExpiresIndependently()
     {
-        // WR-01: неподтверждённая пустота (источник сбоил) — короткий маркер:
-        // защищает троттленный BGPView от повторов в каждом прогоне, но не
-        // замораживает здоровый ASN на сутки. Истёкший TTL → маркер невидим.
+        // A short marker protects BGPView from repeated requests after an unconfirmed empty result.
+        // Its expiration prevents a temporary source failure from hiding a healthy ASN for a full day.
         var dir = Directory.CreateTempSubdirectory();
         try
         {
@@ -110,7 +105,7 @@ public class RipeStatCacheTests
             client.MarkEmpty(64512, TimeSpan.FromHours(1));
             client.IsKnownEmpty(64512).Should().BeTrue("часовой маркер активен");
 
-            client.MarkEmpty(64513, TimeSpan.FromMilliseconds(-1)); // уже истёк
+            client.MarkEmpty(64513, TimeSpan.FromMilliseconds(-1)); // Already expired.
             client.IsKnownEmpty(64513).Should().BeFalse("истёкший маркер = отсутствие маркера");
         }
         finally { Directory.Delete(dir.FullName, true); }
@@ -126,14 +121,14 @@ public class RipeStatCacheTests
             var client = new SubnetSearch.Network.RipeStatClient(new HttpClient(), cache);
 
             client.CachePrefixes(64512, ["192.0.2.0/24"], ["2001:db8::/32"]);
-            // Результат фолбэка ложится под тот же pfx_-ключ, что и обычный RIPE-ответ.
+            // Fallback results use the same pfx_ key as normal RIPE results.
             cache.TryGet("pfx_64512", out var data).Should().BeTrue();
             data.Should().Contain("192.0.2.0/24").And.Contain("2001:db8::/32");
         }
         finally { Directory.Delete(dir.FullName, true); }
     }
 
-    // ── F6: RPKI result must not be cached for 10 years ──
+    // RPKI results must not remain cached for 10 years.
 
     [Fact]
     public void RpkiAuthoritativeTtl_IsDaysNotYears()
@@ -200,13 +195,13 @@ public class RipeStatCacheTests
         var dir = Directory.CreateTempSubdirectory();
         try
         {
-            // Первый экземпляр: одна "вечная" + одна уже истёкшая запись, затем flush.
+            // Flush one long-lived entry together with one expired entry.
             var cache = await RipeStatCache.LoadAsync(dir.FullName);
             cache.Set("forever", "fresh", TimeSpan.FromDays(3650));
             cache.Set("expired", "stale", TimeSpan.FromSeconds(-1));
             await cache.FlushIfDirtyAsync();
 
-            // Свежий экземпляр на том же каталоге читает уже отфильтрованный файл.
+            // A new instance reads the filtered file from the same directory.
             var reloaded = await RipeStatCache.LoadAsync(dir.FullName);
             reloaded.TryGet("forever", out var foreverData).Should().BeTrue();
             foreverData.Should().Be("fresh");

@@ -42,7 +42,7 @@ public static class IpConverter
         return true;
     }
 
-    // Возвращает CIDR-нотацию если диапазон выровнен, иначе "start-end".
+    // Returns CIDR notation when the range is aligned, otherwise "start-end".
     public static string ToCidr(uint start, uint end)
     {
         ulong size = (ulong)end - start + 1;

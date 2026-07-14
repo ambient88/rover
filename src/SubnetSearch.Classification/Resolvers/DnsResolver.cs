@@ -5,7 +5,7 @@ using System.Net;
 
 namespace SubnetSearch.Classification;
 
-// Thin DNS-resolution adapter (live System.Net.Dns lookups) — integration-tested only.
+// Thin adapter for live System.Net.Dns lookups. This requires integration testing.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public class DnsResolver : IDnsResolver
 {

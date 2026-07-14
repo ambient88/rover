@@ -3,12 +3,10 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Офлайн-покрытие секций dedicatedOnly и cloudOnly (TAX-01, D-05):
-//   - Default зеркалирует json: 49544 переехал nonHosting → dedicatedOnly; 11 гиперскейлеров
-//     в cloudOnly.
-//   - LoadAsync парсит новые секции теми же безопасными правилами (T-2.1-01/T-2.1-07):
-//     битый/отсутствующий json → фолбэк Default без исключения.
-//   - Pitfall 3: файл с ОДНОЙ лишь секцией dedicatedOnly/cloudOnly НЕ уходит в Default.
+// Covers dedicatedOnly and cloudOnly without network access.
+// Default mirrors the JSON data, including AS49544 in dedicatedOnly and hyperscalers in cloudOnly.
+// LoadAsync safely falls back to Default for a missing or malformed file.
+// A file with only one supported section remains valid and does not inherit unrelated defaults.
 public class AsnExclusionsTests
 {
     [Fact]
@@ -18,7 +16,7 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public void Default_NonHosting_DoesNotContainI3D() // Pitfall 1/2 — синхронный перенос
+    public void Default_NonHosting_DoesNotContainI3D() // Covers the i3D category migration.
     {
         AsnExclusions.Default.NonHostingAsns.Should().NotContain(49544u);
     }
@@ -73,7 +71,7 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public async Task LoadAsync_OnlyDedicatedOnly_DoesNotFallBackToDefault() // Pitfall 3
+    public async Task LoadAsync_OnlyDedicatedOnly_DoesNotFallBackToDefault()
     {
         var path = Path.GetTempFileName();
         try
@@ -86,7 +84,7 @@ public class AsnExclusionsTests
             """);
             var excl = await AsnExclusions.LoadAsync(path);
             excl.DedicatedOnlyAsns.Should().Contain(12345u);
-            // Не Default: остальные секции пусты, а не унаследованы из зашитых дефолтов.
+            // Other sections remain empty instead of inheriting built-in defaults.
             excl.NonHostingAsns.Should().BeEmpty();
             excl.KnownCdnAsns.Should().BeEmpty();
             excl.KnownAiProviderAsns.Should().BeEmpty();
@@ -96,7 +94,7 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public async Task LoadAsync_OnlyCloudOnly_DoesNotFallBackToDefault() // Pitfall 3, D-05
+    public async Task LoadAsync_OnlyCloudOnly_DoesNotFallBackToDefault()
     {
         var path = Path.GetTempFileName();
         try
@@ -109,7 +107,7 @@ public class AsnExclusionsTests
             """);
             var excl = await AsnExclusions.LoadAsync(path);
             excl.CloudOnlyAsns.Should().Contain(16509u);
-            // Не Default: остальные секции пусты, а не унаследованы из зашитых дефолтов.
+            // Other sections remain empty instead of inheriting built-in defaults.
             excl.NonHostingAsns.Should().BeEmpty();
             excl.KnownCdnAsns.Should().BeEmpty();
             excl.KnownAiProviderAsns.Should().BeEmpty();
@@ -126,7 +124,7 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public async Task LoadAsync_CorruptJson_ReturnsDefaultWithoutThrowing() // T-2.1-01
+    public async Task LoadAsync_CorruptJson_ReturnsDefaultWithoutThrowing()
     {
         var path = Path.GetTempFileName();
         try
@@ -139,7 +137,7 @@ public class AsnExclusionsTests
     }
 
     [Fact]
-    public async Task LoadAsync_RepositoryDataFile_HasI3DMigrated() // проверка миграции данных
+    public async Task LoadAsync_RepositoryDataFile_HasI3DMigrated()
     {
         var repoFile = FindRepositoryDataFile();
         repoFile.Should().NotBeNull("data/asn-exclusions.json должен находиться при запуске из репозитория");
@@ -159,7 +157,7 @@ public class AsnExclusionsTests
         excl.CloudOnlyAsns.Should().Contain(16509u, "AWS размечен в cloudOnly");
     }
 
-    // Поиск data/asn-exclusions.json вверх по дереву от каталога сборки.
+    // Locate data/asn-exclusions.json by walking up from the build directory.
     private static string? FindRepositoryDataFile()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

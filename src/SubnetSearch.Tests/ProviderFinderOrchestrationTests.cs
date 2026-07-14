@@ -6,8 +6,7 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Tests;
 
-// Exercises the full FindGlobal/FindByAsnList candidate pipeline (PeeringDB net fetch → parse →
-// RIPE prefix/neighbour enrichment → scoring) against mocked HTTP endpoints.
+// Exercises candidate discovery, PeeringDB parsing, RIPE enrichment, and scoring against mocked HTTP endpoints.
 public class ProviderFinderOrchestrationTests
 {
     private static HttpClient PdbWithNets(string netJsonData)
@@ -60,7 +59,7 @@ public class ProviderFinderOrchestrationTests
     {
         using var pdb  = PdbWithNets(
             "{\"asn\":64501,\"name\":\"NoPrefix\",\"info_type\":\"Content\"}");
-        // RIPE returns no prefixes for this ASN → candidate has an empty pool and is dropped.
+        // RIPE returns no prefixes for this ASN, so the candidate has an empty pool and is dropped.
         using var ripe = new HttpClient(TestHttpMessageHandler.Custom(_ =>
             new HttpResponseMessage(HttpStatusCode.OK)
             { Content = new StringContent("{\"status\":\"ok\",\"data\":{\"prefixes\":[]}}") }));

@@ -3,10 +3,10 @@ using SubnetSearch.Classification;
 
 namespace SubnetSearch.Tests;
 
-// Приоритеты выверены на реальных конфликтах источников (см. AsnTypeResolver):
-//   Blizzard AS57976: as.json=hosting (ошибка), bgp.tools=cdn → должен стать "cdn" (reject).
-//   CG-Net  AS16247: as.json=isp, bgp.tools=vpsh (устаревший)  → "isp" (reject).
-//   OVH     AS16276: as.json=hosting, bgp.tools=vpsh+cdn        → "hosting" (vpsh бьёт cdn).
+// These priorities reflect real conflicts between classification sources.
+// Blizzard AS57976 has an incorrect hosting category in as.json, while bgp.tools marks it as CDN.
+// CG-Net AS16247 has an ISP category in as.json and a stale vpsh tag in bgp.tools.
+// OVH AS16276 has hosting in as.json plus vpsh and CDN tags, with vpsh taking priority.
 public class AsnTypeResolverTests
 {
     private static IReadOnlyDictionary<uint, string> Build(
@@ -75,9 +75,8 @@ public class AsnTypeResolverTests
     [Fact]
     public void AsJsonHostingAlone_IsNotAPositiveVerdict() // F5/Cisco Umbrella case
     {
-        // as.json помечает "hosting" 12k+ ASN, включая F5 (AS35280) и Cisco Umbrella
-        // (AS36692) — категория слишком щедрая, поэтому без vpsh-тега она не даёт
-        // позитивный вердикт: ASN остаётся неизвестным (отсутствует в карте).
+        // as.json labels more than 12,000 ASNs as hosting, including F5 and Cisco Umbrella.
+        // This category is too broad to produce a positive result without a vpsh tag.
         var map = Build(Tags(), new() { [35280] = "hosting" });
 
         map.ContainsKey(35280).Should().BeFalse();
@@ -117,7 +116,7 @@ public class AsnTypeResolverTests
         map.Should().BeEmpty();
     }
 
-    // --- Приоритет access-тегов над vpsh (спека 2026-07-08) ---
+    // Access tags take priority over vpsh tags.
 
     [Theory]
     [InlineData("dsl")]
@@ -125,8 +124,8 @@ public class AsnTypeResolverTests
     [InlineData("satnet")]
     public void AccessTag_BeatsVpsh_EvenWithAsJsonHosting(string accessTag) // Wavenet AS5413
     {
-        // Противоречащий тег доступа (bgp.tools) сильнее устаревшего vpsh-тега,
-        // даже когда as.json щедро помечает ASN как hosting.
+        // A conflicting access tag from bgp.tools takes priority over a stale vpsh tag,
+        // even when as.json labels the ASN as hosting.
         var map = Build(
             Tags(("vpsh", [5413u]), (accessTag, [5413u])),
             new() { [5413] = "hosting" });
@@ -135,9 +134,9 @@ public class AsnTypeResolverTests
     }
 
     [Fact]
-    public void VpshOnly_WithAsJsonHosting_StaysHosting() // Claranet AS8426 — не сломать
+    public void VpshOnly_WithAsJsonHosting_StaysHosting() // Covers Claranet AS8426.
     {
-        // Без противоречащего access-тега vpsh по-прежнему даёт hosting.
+        // Without a conflicting access tag, vpsh still produces a hosting classification.
         var map = Build(
             Tags(("vpsh", [8426u])),
             new() { [8426] = "hosting" });
@@ -148,7 +147,7 @@ public class AsnTypeResolverTests
     [Theory]
     [InlineData("corp")]
     [InlineData("biznet")]
-    public void BusinessTag_StaysBelowVpsh(string bizTag) // non-goal: бизнес-теги НЕ бьют vpsh
+    public void BusinessTag_StaysBelowVpsh(string bizTag) // Business tags do not override vpsh.
     {
         var map = Build(
             Tags(("vpsh", [4242u]), (bizTag, [4242u])),

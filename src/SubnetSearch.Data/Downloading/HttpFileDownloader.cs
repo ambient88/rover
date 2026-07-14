@@ -31,8 +31,8 @@ public class HttpFileDownloader : IFileDownloader
         => await DownloadAsync(url, new DownloadOptions(), progress, cancellationToken);
 
     // Live HTTP download state machine (retry / resume / partial-file plumbing over the network).
-    // Its extractable decision logic — IsValidContentRange, TrySetIfRange, VerifyChecksum,
-    // CopyWithProgressAsync — is unit-tested separately; the raw I/O loop is integration-scope, so
+    // Its decision helpers include IsValidContentRange, TrySetIfRange, VerifyChecksum,
+    // and CopyWithProgressAsync. They have separate unit tests, while the raw I/O loop requires integration tests.
     // it is excluded from the unit-coverage metric.
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public async Task<Stream> DownloadAsync(
@@ -121,7 +121,7 @@ public class HttpFileDownloader : IFileDownloader
                 long? totalBytes = fullResponse.Content.Headers.ContentLength;
 
                 // Use plain Asynchronous (no DeleteOnClose) so the handle can be closed in
-                // the catch block without deleting the file — required for cross-retry resume
+                // the catch block without deleting the file. This allows a later retry to resume.
                 // on both persistent and non-persistent paths (Bug: FileShare.None conflict).
                 string partPath = persistentResume ? partialFilePath! : Path.GetTempFileName();
                 var partialState = new PartialDownloadState(
@@ -138,7 +138,7 @@ public class HttpFileDownloader : IFileDownloader
                     if (totalBytes.HasValue && fileStream.Length != totalBytes.Value)
                         throw new InvalidDataException($"Downloaded {fileStream.Length} bytes, server declared {totalBytes.Value} bytes.");
 
-                    // Close the write handle (FileShare.None) BEFORE verifying the checksum —
+                    // Close the exclusive write handle before verifying the checksum.
                     // VerifyChecksum opens the file for reading and would otherwise hit a sharing
                     // violation on Windows.
                     await fileStream.DisposeAsync();

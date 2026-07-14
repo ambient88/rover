@@ -3,17 +3,17 @@ using System.Net.Sockets;
 
 namespace SubnetSearch.Network;
 
-// Raw UDP socket probe (live network I/O) — integration-tested only.
+// Raw UDP socket probe with live network I/O. This is covered by integration tests only.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class UdpProbe
 {
     // Sends a single UDP datagram and interprets the result:
-    //   true  = ICMP "port unreachable" received → port is closed
-    //   false = timeout / no ICMP reply          → port may be open (or filtered)
+    // true means an ICMP "port unreachable" response confirmed a closed port.
+    // false means a timeout left the port open or filtered.
     //
     // For WireGuard (port 2408): a real WARP endpoint ignores invalid packets
     // (no reply), while a closed port returns ICMP unreachable.
-    // Therefore: false == "possibly open", true == "definitely closed".
+    // False means the port may be open, while true confirms it is closed.
     public static async Task<bool> IsClosedAsync(
         string host, int port, int timeoutMs = 2000, CancellationToken ct = default)
     {
@@ -31,13 +31,13 @@ public static class UdpProbe
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(timeoutMs);
                 await udp.ReceiveAsync(cts.Token);
-                // Got an unexpected response — port is not a standard WireGuard endpoint
+                // An unexpected response means the port is not a standard WireGuard endpoint.
                 // but is not closed either.
                 return false;
             }
             catch (OperationCanceledException)
             {
-                // Timeout — no ICMP unreachable received → port is likely open.
+                // A timeout without an ICMP unreachable response usually means the port is open.
                 return false;
             }
             catch (SocketException ex) when (
@@ -50,7 +50,7 @@ public static class UdpProbe
         }
         catch
         {
-            return false; // Unknown — assume not closed.
+            return false; // Treat an unknown result as not closed.
         }
     }
 }

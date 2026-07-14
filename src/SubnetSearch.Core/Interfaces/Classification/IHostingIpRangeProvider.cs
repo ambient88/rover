@@ -2,7 +2,7 @@
 
 namespace SubnetSearch.Core.Interfaces.Classification;
 
-// Намеренно содержит только поиск — загрузка данных не является ответственностью потребителей индекса.
+// Intentionally exposes lookups only. Loading data is not the responsibility of index consumers.
 public interface IHostingIpRangeProvider
 {
     HostingIpRange? Find(uint ipInt);

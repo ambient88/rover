@@ -3,8 +3,8 @@ using SubnetSearch.Classification;
 
 namespace SubnetSearch.Tests;
 
-// IPsum: TSV «IP<TAB>score» (строки с # — комментарии). Loader строит карту uint→score,
-// Checker отдаёт score по числовому IP или null.
+// IPsum parses IP and score TSV rows while skipping hash-prefixed comments.
+// The checker returns a score for a numeric IP or null when none exists.
 public class IpsumTests
 {
     private static string TempFile(string body)
@@ -36,15 +36,15 @@ public class IpsumTests
     }
 
     [Fact]
-    public async Task Load_SkipsCommentsBlankAndMalformedLines() // краевой случай: мусорные строки
+    public async Task Load_SkipsCommentsBlankAndMalformedLines()
     {
         var path = TempFile(
             "# Ipsum threat list\n" +
             "\n" +
             "9.9.9.9\t3\n" +
-            "no-tab-here 4\n" +          // нет табуляции
-            "not.an.ip\t7\n" +           // невалидный IP
-            "10.0.0.1\tnotanumber\n");   // нечисловой score
+            "no-tab-here 4\n" +          // Missing tab separator.
+            "not.an.ip\t7\n" +           // Invalid IP address.
+            "10.0.0.1\tnotanumber\n");   // Score is not numeric.
         try
         {
             var map = await new IpsumLoader().LoadAsync(path);
@@ -55,7 +55,7 @@ public class IpsumTests
     }
 
     [Fact]
-    public async Task Load_SkipsIpv6() // только IPv4 (AddressFamily.InterNetwork)
+    public async Task Load_SkipsIpv6() // Only IPv4 addresses are supported.
     {
         var path = TempFile("2001:db8::1\t5\n1.2.3.4\t2\n");
         try
@@ -68,7 +68,7 @@ public class IpsumTests
     }
 
     [Fact]
-    public async Task Load_MissingFile_ReturnsEmpty() // краевой случай: файла нет
+    public async Task Load_MissingFile_ReturnsEmpty()
     {
         var map = await new IpsumLoader().LoadAsync(
             Path.Combine(Path.GetTempPath(), $"nonexistent-{Guid.NewGuid():N}.txt"));

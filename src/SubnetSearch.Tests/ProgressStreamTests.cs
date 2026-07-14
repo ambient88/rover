@@ -4,8 +4,7 @@ using SubnetSearch.Data;
 
 namespace SubnetSearch.Tests;
 
-// ProgressStream: read-only обёртка, репортящая накопленный объём прочитанного;
-// запись/seek/flush не поддерживаются.
+// ProgressStream reports cumulative bytes read and does not support writing, seeking, or flushing.
 public class ProgressStreamTests
 {
     private static MemoryStream Source(int bytes) => new(Encoding.ASCII.GetBytes(new string('x', bytes)));
@@ -19,7 +18,7 @@ public class ProgressStreamTests
         var buf = new byte[4];
         ps.Read(buf, 0, 4);
         ps.Read(buf, 0, 4);
-        ps.Read(buf, 0, 4); // осталось 2 байта
+        ps.Read(buf, 0, 4); // Two bytes remain.
 
         progress.Should().Equal(4, 8, 10);
     }
@@ -38,14 +37,14 @@ public class ProgressStreamTests
     }
 
     [Fact]
-    public void Read_AtEnd_DoesNotReport() // краевой случай: чтение за концом → 0 байт
+    public void Read_AtEnd_DoesNotReport()
     {
         var progress = new List<long>();
         using var ps = new ProgressStream(Source(2), progress.Add);
 
         var buf = new byte[8];
-        ps.Read(buf, 0, 8); // читает 2
-        ps.Read(buf, 0, 8); // читает 0 — репорта нет
+        ps.Read(buf, 0, 8); // Read the final two bytes.
+        ps.Read(buf, 0, 8); // An empty read produces no progress report.
 
         progress.Should().Equal(2);
     }

@@ -5,7 +5,7 @@ using SubnetSearch.Data;
 
 namespace SubnetSearch.Tests;
 
-// DownloadManagerFactory: чистая фабрика HttpClient/хранилища/списка файлов (без сети).
+// DownloadManagerFactory creates the HTTP client, storage, and file list without network access.
 public class DownloadManagerFactoryTests : IDisposable
 {
     private readonly string _dir;

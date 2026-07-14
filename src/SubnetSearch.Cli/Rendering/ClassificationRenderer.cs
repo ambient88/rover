@@ -13,8 +13,8 @@ public static class ClassificationRenderer
         if (!string.IsNullOrEmpty(ip))
             AnsiConsole.MarkupLine($"[cyan]IP: {Markup.Escape(ip)}[/]");
 
-        // When querying a CDN IP directly (-a), show node type — no "hidden" warning.
-        // http != null means HTTP responded → Tunnel; http == null → WARP (no service running).
+        // Show the node type when a CDN IP is queried directly with -a.
+        // An HTTP response indicates Tunnel. No HTTP service indicates WARP.
         if (!string.IsNullOrEmpty(ip))
         {
             var rawProduct = SubnetSearch.Network.Http.CloudflareProductDetector.DetectFromIp(ip);
@@ -111,7 +111,7 @@ public static class ClassificationRenderer
                 }
             }
 
-            // Hidden route block: shown when proxy/CDN is the last visible hop + trailing timeouts.
+            // Show the hidden route block when a proxy or CDN is followed only by timeouts.
             if (traceroute.LikelyHiddenRoute)
             {
                 Console.WriteLine();

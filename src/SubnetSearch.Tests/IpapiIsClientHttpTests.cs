@@ -4,7 +4,7 @@ using SubnetSearch.Network.Reputation;
 
 namespace SubnetSearch.Tests;
 
-// Async-путь IpapiIsClient (сам HTTP-запрос + разбор): парсинг покрыт в IpapiIsClientTests.
+// Covers the asynchronous IpapiIsClient HTTP path. IpapiIsClientTests cover parsing details.
 public class IpapiIsClientHttpTests
 {
     private static IpapiIsClient Client(TestHttpMessageHandler h) => new(new HttpClient(h));
@@ -38,7 +38,7 @@ public class IpapiIsClientHttpTests
     }
 
     [Fact]
-    public async Task GetAsnInfo_HttpError_ReturnsEmptyInfo() // краевой случай: 5xx → мягкая деградация
+    public async Task GetAsnInfo_HttpError_ReturnsEmptyInfo()
     {
         var info = await Client(TestHttpMessageHandler.Always(HttpStatusCode.BadGateway, "502"))
             .GetAsnInfoAsync(24940);
@@ -47,7 +47,7 @@ public class IpapiIsClientHttpTests
     }
 
     [Fact]
-    public async Task GetAsnInfo_NetworkException_ReturnsEmptyInfo() // краевой случай: обрыв
+    public async Task GetAsnInfo_NetworkException_ReturnsEmptyInfo()
     {
         var info = await Client(TestHttpMessageHandler.Throws(new HttpRequestException("dns failure")))
             .GetAsnInfoAsync(24940);
@@ -56,7 +56,7 @@ public class IpapiIsClientHttpTests
     }
 
     [Fact]
-    public async Task GetAsnInfo_MalformedJson_ReturnsEmptyInfo() // краевой случай: битый ответ
+    public async Task GetAsnInfo_MalformedJson_ReturnsEmptyInfo()
     {
         var info = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ not json ]"))
             .GetAsnInfoAsync(24940);
@@ -65,7 +65,7 @@ public class IpapiIsClientHttpTests
     }
 
     [Fact]
-    public async Task GetAsnInfo_Cancellation_Throws() // краевой случай: отмена пробрасывается
+    public async Task GetAsnInfo_Cancellation_Throws()
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();

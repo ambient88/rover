@@ -25,7 +25,7 @@ public class PeeringDbWebsiteResolverTests
     public async Task GetNetworkInfo_KeyNull_SendsNoAuthorization()
     {
         var handler = TestHttpMessageHandler.Always(HttpStatusCode.OK, """{"data":[]}""");
-        await Client(handler).GetNetworkInfoAsync(13335); // key == null
+        await Client(handler).GetNetworkInfoAsync(13335); // No API key is configured.
 
         handler.Requests[0].Headers.Authorization.Should().BeNull(
             "no credential must be sent when no key is configured");

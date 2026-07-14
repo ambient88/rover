@@ -5,7 +5,7 @@ using SubnetSearch.Network.Reputation;
 namespace SubnetSearch.Tests;
 
 // AbuseIPDB check-block: data.reportedAddress[].abuseConfidenceScore (0..100).
-// Клиент возвращает среднее по адресам, 0.0 при пустом списке, null при сбое/отсутствии данных.
+// The client averages address scores, returns 0 for empty input, and null when data is unavailable.
 public class AbuseIpDbClientTests
 {
     private static AbuseIpDbClient Client(TestHttpMessageHandler h)
@@ -83,7 +83,7 @@ public class AbuseIpDbClientTests
     }
 
     [Fact]
-    public async Task GetBlockScore_MalformedJson_ReturnsNull() // краевой случай: битый ответ
+    public async Task GetBlockScore_MalformedJson_ReturnsNull()
     {
         var score = await Client(TestHttpMessageHandler.Always(HttpStatusCode.OK, "{ not json ]"))
             .GetBlockScoreAsync("1.2.3.0/24");
@@ -92,7 +92,7 @@ public class AbuseIpDbClientTests
     }
 
     [Fact]
-    public async Task GetBlockScore_NetworkException_ReturnsNull() // краевой случай: обрыв соединения
+    public async Task GetBlockScore_NetworkException_ReturnsNull()
     {
         var score = await Client(TestHttpMessageHandler.Throws(new HttpRequestException("connection reset")))
             .GetBlockScoreAsync("1.2.3.0/24");
@@ -112,7 +112,7 @@ public class AbuseIpDbClientTests
     }
 
     [Fact]
-    public async Task GetBlockScore_Cancellation_Throws() // краевой случай: отмена операции
+    public async Task GetBlockScore_Cancellation_Throws()
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();

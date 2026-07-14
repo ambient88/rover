@@ -57,7 +57,7 @@ public class ServerProvidersTests
     }
 
     [Fact]
-    public async Task IsAllowed_OnlyCoreMembers() // pure allowlist: авто-гейт убран
+    public async Task IsAllowed_OnlyCoreMembers() // Only explicit core membership grants access.
     {
         var basePath = Temp("""{"providers":[{"asn":24940,"name":"Hetzner","types":["vps"]}]}""");
         var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
@@ -71,9 +71,9 @@ public class ServerProvidersTests
     }
 
     [Fact]
-    public async Task IsAllowed_And_IsInCore_AreCaseInsensitive() // WR-01: typeFilter приходит сырым
+    public async Task IsAllowed_And_IsInCore_AreCaseInsensitive() // The raw typeFilter can use any letter case.
     {
-        // Тип в файле — в верхнем регистре, запрос — в разном.
+        // Type matching is case-insensitive for both file values and queries.
         var basePath = Temp("""{"providers":[{"asn":24940,"name":"Hetzner","types":["VPS"]}]}""");
         var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
         File.Delete(basePath);
@@ -86,7 +86,7 @@ public class ServerProvidersTests
     }
 
     [Fact]
-    public async Task HostingAlias_FoldsToServer_InCoreAsnsAndIsAllowed() // W1: --type hosting == server
+    public async Task HostingAlias_FoldsToServer_InCoreAsnsAndIsAllowed() // Hosting behaves like the server filter.
     {
         var basePath = Temp("""
         {"providers":[
@@ -97,7 +97,7 @@ public class ServerProvidersTests
         var sp = await ServerProviders.LoadAsync(basePath, basePath + ".x");
         File.Delete(basePath);
 
-        // hosting — документированный алиас server: любой тип ядра.
+        // Hosting is a documented server alias and accepts every core server type.
         sp.CoreAsnsForType("hosting").Should().BeEquivalentTo(new uint[] { 24940, 16509 });
         sp.CoreAsnsForType("HOSTING").Should().BeEquivalentTo(new uint[] { 24940, 16509 });
         sp.IsAllowed(24940, "hosting").Should().BeTrue();
@@ -107,7 +107,7 @@ public class ServerProvidersTests
     }
 
     [Fact]
-    public async Task LocalOverride_ReplacesTypeSet_NotUnion() // MergeFile — полная замена записи
+    public async Task LocalOverride_ReplacesTypeSet_NotUnion() // MergeFile replaces the complete entry.
     {
         var basePath  = Temp("""{"providers":[{"asn":5,"name":"Base","types":["vps"]}]}""");
         var localPath = Temp("""{"providers":[{"asn":5,"name":"Local","types":["cloud"]}]}""");

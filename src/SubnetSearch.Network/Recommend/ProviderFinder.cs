@@ -27,9 +27,9 @@ public record ProviderCandidate(
 public class ProviderFinder(
     HttpClient      peeringDbHttp,
     RipeStatClient  ripeClient,
-    // Локальная карта asn → тип ("hosting"/"isp"/"business"/"cdn"/…), собранная
-    // AsnTypeResolver'ом из as.json + bgp.tools tags. Заменяет сетевые запросы к ipapi.is:
-    // ноль квоты, работает офлайн, недоступность источника невозможна.
+    // AsnTypeResolver builds a local type map from as.json and bgp.tools tags.
+    // This replaces network calls to ipapi.is for provider type filtering.
+    // zero quota, works offline, and the source can never be unavailable.
     IReadOnlyDictionary<uint, string>? asnTypes = null,
     AsnExclusions?  exclusions            = null,
     BgpViewClient?  bgpView               = null,
@@ -69,9 +69,9 @@ public class ProviderFinder(
     }
 
     // Maps user-friendly --type aliases to PeeringDB info_type values (case-sensitive).
-    // Returns null for unrecognized non-null input — caller should treat as invalid.
+    // Returns null for an unrecognized value so the caller can report invalid input.
     //
-    // NOTE: PeeringDB's info_type="Hosting" is empty — no providers use it.
+    // PeeringDB currently has no providers with info_type="Hosting".
     // VPS/dedicated providers (Hetzner, OVH, Linode, DigitalOcean) are all "Content".
     // CDN providers (Cloudflare, Akamai, Fastly) are also "Content".
     // Some cloud providers (Yandex Cloud, etc.) use "Enterprise".
@@ -98,33 +98,33 @@ public class ProviderFinder(
     public static bool ShouldExcludeAi(string? typeFilter) =>
         typeFilter?.ToLowerInvariant() is "server" or "hosting" or "vps" or "dedicated" or "cloud";
 
-    // Allowlist-членство для server-типов (заменяет ApplyTaxonomyFilter): кандидат остаётся,
-    // ТОЛЬКО если он в курируемом ядре по типу (pure allowlist — авто-гейт убран).
-    // Для не-server typeFilter (cdn/nsp/ai/null-как-«не сервер») — возвращает вход без изменений.
+    // Allowlist membership for server types (replaces ApplyTaxonomyFilter): a candidate stays
+    // A provider passes only when it belongs to the curated core for that type.
+    // For non-server typeFilter (cdn/nsp/ai/null-as-"not server") it returns the input unchanged.
     public static IReadOnlyList<ProviderCandidate> ApplyServerAllowlist(
         IReadOnlyList<ProviderCandidate> candidates,
         string? typeFilter,
         ServerProviders serverProviders)
     {
         if (!IsServerTypeFilter(typeFilter)) return candidates;
-        // typeFilter приходит сырым (регистр не нормализован выше). hosting — документированный
-        // алиас server; приводим к нижнему регистру и сворачиваем hosting→server для membership.
+        // typeFilter arrives raw (case is not normalized upstream). hosting is the documented
+        // Normalize case and treat hosting as an alias for server membership.
         var t = typeFilter!.ToLowerInvariant();
         if (t == "hosting") t = "server";
         return [.. candidates.Where(c => serverProviders.IsAllowed(c.Asn, t))];
     }
 
-    // server-семейство фильтров, к которым применяется allowlist (hosting — алиас server).
+    // The server family of filters the allowlist applies to (hosting is an alias for server).
     public static bool IsServerTypeFilter(string? typeFilter) =>
         typeFilter?.ToLowerInvariant() is "server" or "hosting" or "vps" or "dedicated" or "cloud";
 
-    // core-first источник кандидатов применяется только для global server-типа без --from:
-    // тогда кандидаты берутся из ядра, а не из широкого PeeringDB-pull.
+    // The core-first candidate source applies only to the global server type without --from:
+    // then candidates come from the core rather than a broad PeeringDB pull.
     public static bool UseCoreFirstSource(string? typeFilter, string? region, bool hasFromList) =>
         IsServerTypeFilter(typeFilter) && string.IsNullOrWhiteSpace(region) && !hasFromList;
 
-    // Оставляет только ASN, чьё множество стран (из ip2asn) пересекается с запрошенными кодами.
-    // Пустой countryCodes → вернуть вход как есть (без фильтра). Полностью локально, без сети.
+    // Keeps only ASNs whose country set (from ip2asn) intersects the requested codes.
+    // An empty country list preserves the input without network access.
     public static IReadOnlyList<uint> FilterAsnsByCountry(
         IEnumerable<uint> asns,
         IReadOnlyDictionary<uint, HashSet<string>> asnToCountries,
@@ -150,9 +150,9 @@ public class ProviderFinder(
     private bool IsAiProvider(ProviderCandidate c)         => _excl.KnownAiProviderAsns.Contains(c.Asn);
 
     // Pure decision for a candidate whose local ASN type is neither "hosting" nor "cloud"
-    // (no I/O — fully testable). CAIDA and NSP checks apply REGARDLESS of the local IP-range
+    // without I/O, which keeps it fully testable. CAIDA and NSP checks apply regardless of the local IP range
     // whitelist (ipcat/cloud-provider/server-ip datasets flag "this address block sits in a
-    // datacenter", not "this org sells retail VPS/dedicated servers" — a wholesale transit
+    // datacenter" rather than "this organization sells retail VPS or dedicated servers." A wholesale transit
     // carrier's own infrastructure runs through datacenters too). Before this rule, whitelist
     // membership alone let large NSP-classified carriers through unconditionally: Hurricane
     // Electric, Colt, Equinix, M247, DataBank all slipped past as "vps" this way. Whitelist
@@ -183,7 +183,7 @@ public class ProviderFinder(
         CancellationToken ct = default)
     {
         // PeeringDB info_type values are case-sensitive: "Content", "NSP".
-        // NOTE: "Hosting" is intentionally omitted — PeeringDB has no networks with that type.
+        // "Hosting" is omitted because PeeringDB has no networks with that type.
         // Requests are sequential to avoid triggering PeeringDB rate limits from parallel bursts.
         var types   = infoTypes ?? ["Content", "NSP"];
         var fetches = (await Task.WhenAll(types.Select(
@@ -209,7 +209,7 @@ public class ProviderFinder(
             .Concat(enterprise)
             .DistinctBy(n => n.Asn);
 
-        // NOTE: PeeringDB bulk /api/net does not return a 'country' field, so client-side
+        // PeeringDB bulk /api/net does not return a country field, so client-side
         // country filtering here would eliminate all candidates. Country is looked up from
         // ip2asn in HandleRecommend after enrichment, then the post-filter is applied there.
 
@@ -226,10 +226,10 @@ public class ProviderFinder(
 
         onPreEnrichment?.Invoke(perType, errors, top.Count);
 
-        // When hosting filter is active, pre-filter by local ASN type BEFORE RIPE Stat calls.
-        // Whitelist ASNs (confirmed local hosting files) → always pass.
-        // Non-whitelist ASNs → must have explicit "hosting" type; null/other → rejected.
-        // The type map is local (as.json + bgp.tools tags), so there is no outage fallback:
+        // Apply the local ASN type filter before RIPE Stat calls.
+        // ASNs confirmed by local hosting files always pass.
+        // Other ASNs need an explicit hosting type. Missing or different types are rejected.
+        // The local as.json and bgp.tools type map does not need an outage fallback.
         // when the map is absent entirely, EnrichWithPrefixesAsync applies balanced filtering.
         if (excludeCdn && _asnTypes != null)
         {
@@ -238,16 +238,16 @@ public class ProviderFinder(
             {
                 var t = LookupAsnType(c.Asn);
                 if (t is "hosting" or "cloud") return true;
-                // Whitelist (ipcat/cloud/server-ips) спасает ТОЛЬКО неизвестных:
-                // диапазоны в датасетах устаревают и переходят из рук в руки
-                // (Blizzard унаследовал ipcat-запись PEER 1), поэтому явный
-                // не-hosting вердикт всегда сильнее whitelist.
+                // The ipcat, cloud, and server IP allowlists only rescue unknown types.
+                // ranges in the datasets go stale and change hands
+                // (Blizzard inherited PEER 1's ipcat entry), so an explicit
+                // non-hosting verdict always outweighs the whitelist.
                 return t == null && (localHostingWhitelist?.Contains(c.Asn) ?? false);
             })];
             onStatus?.Invoke($"ASN type (local): {before} → {top.Count} candidates after the hosting filter");
         }
 
-        // The local-type pre-filter above is cheap triage to cut RIPE Stat calls; it is NOT a
+        // The local type filter reduces RIPE Stat calls but does not provide a
         // substitute for the full check below (it has no CAIDA/NSP/size-threshold logic), so
         // filterHostingOnly always runs regardless of whether the pre-filter ran. Passing whitelist
         // membership through both stages let large NSP carriers with no positive hosting signal
@@ -386,7 +386,7 @@ public class ProviderFinder(
 
     private static readonly TimeSpan PeeringDbCacheTtl = TimeSpan.FromHours(8);
 
-    // Allowed info_type values for PeeringDB queries — guards URL construction and cache paths.
+    // Allowlisted info_type values protect PeeringDB URLs and cache paths.
     private static readonly HashSet<string> _allowedPeeringDbInfoTypes =
         new(StringComparer.OrdinalIgnoreCase) { "Content", "NSP", "Enterprise", "Hosting" };
 
@@ -472,8 +472,8 @@ public class ProviderFinder(
     }
 
     // PeeringDB defaults to 250 records per page. Paginate with skip until all records are fetched.
-    // Returns (candidates, errorMessage) — error is non-null when the first page fails.
-    // Live PeeringDB HTTP pagination with 429/timeout retry + rate-limit backoff — pure network
+    // Returns candidates and an error message when the first page fails.
+    // Live PeeringDB pagination handles rate limits and timeouts through network I/O.
     // I/O orchestration. The record parsing (ParseNetwork) and cache round-trip are unit-tested;
     // the fetch/retry loop is integration-scope, so it is excluded from the unit-coverage metric.
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
@@ -518,7 +518,7 @@ public class ProviderFinder(
                     }
 
                     lastErr = null;
-                    break; // success — exit retry loop
+                    break; // A successful request ends the retry loop.
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (OperationCanceledException)
@@ -575,9 +575,9 @@ public class ProviderFinder(
         return (all, null);
     }
 
-    // Rate limiter shared across all RIPE Stat calls in this instance — avoids HTTP 429.
-    // Each candidate in Phase A acquires it twice (prefix + neighbour) concurrently,
-    // so the count must be >= 2 × MaxDegreeOfParallelism to avoid potential deadlock.
+    // One rate limiter is shared by all RIPE Stat calls in this instance to avoid HTTP 429.
+    // Each candidate acquires it once for prefixes and once for neighbors,
+    // so the count must be at least twice MaxDegreeOfParallelism to avoid a potential deadlock.
     private readonly SemaphoreSlim _ripeSemaphore = new(20, 20);
 
     private async Task<IReadOnlyList<ProviderCandidate>> EnrichWithPrefixesAsync(
@@ -591,8 +591,8 @@ public class ProviderFinder(
         var withPrefixes = new System.Collections.Concurrent.ConcurrentBag<ProviderCandidate>();
         localPrefixFallback ??= BuildLocalPrefixFallback(candidates);
 
-        // Phase A: RIPE prefixes + neighbours run simultaneously per candidate.
-        // ASN type check is a local map lookup (as.json + bgp.tools) — no network call.
+        // RIPE prefix and neighbor requests run together for each candidate.
+        // ASN type checks use the local as.json and bgp.tools map without network access.
         await Parallel.ForEachAsync(candidates,
             new ParallelOptions { MaxDegreeOfParallelism = 10, CancellationToken = ct },
             async (candidate, innerCt) =>
@@ -607,7 +607,7 @@ public class ProviderFinder(
 
                 await Task.WhenAll(prefixTask, neighbourTask);
 
-                // Get prefix data first — needed for the IP pool threshold in the filter below.
+                // Load prefix data first because the filter below needs the IP pool size.
                 var (ipv4, ipv6)  = prefixTask.Result;
                 var (upstream, _) = neighbourTask.Result;
                 if (ipv4.Count == 0) return;
@@ -615,13 +615,13 @@ public class ProviderFinder(
 
                 // Principled hosting filter (applied when --type server/vps/cloud is used):
                 //
-                //  Whitelist (ipcat + cloud-providers + server-ips) → always passes.
+                // Entries from ipcat, cloud providers, and server IP files always pass.
                 //
-                //  NSP (transit/ISP networks): strict — require ipapi.is "hosting"/"cloud".
+                // NSP transit and ISP networks require an ipapi.is hosting or cloud classification.
                 //    Rationale: ISPs vastly outnumber hosting NSPs; false positives are common.
                 //
                 //  Content: lenient with targeted exclusions.
-                //    Pass:   ipapi.is "hosting"/"cloud", or null with ≥1024 IPs (benefit of doubt).
+                // Pass hosting or cloud types from ipapi.is. Missing types pass with at least 1024 IPs.
                 //    Reject: ipapi.is explicitly non-hosting (isp/cable/cdn/government/education),
                 //            or null with <1024 IPs (micro-networks unlikely to be real VPS providers).
                 //
@@ -631,7 +631,7 @@ public class ProviderFinder(
                 if (IsNonHostingProvider(candidate)) return;
 
                 // Hard block: AI/GPU-only cloud providers (CoreWeave, Lambda, Crusoe, etc.) are
-                // never included when --type excludes AI (server/vps/dedicated/cloud) — this must
+                // never included when --type excludes AI for server-related filters. This must
                 // apply regardless of candidate origin (PeeringDB match, RIPE overview fallback,
                 // or supplement paths like bgp.tools vpsh) since all of them funnel through here.
                 if (excludeAi && IsAiProvider(candidate)) return;
@@ -649,7 +649,7 @@ public class ProviderFinder(
 
                     var asnType = LookupAsnType(candidate.Asn);
 
-                    // Explicit non-hosting verdicts reject BEFORE the whitelist check:
+                    // Explicit non-hosting results are rejected before the allowlist check.
                     // range datasets go stale and ranges change hands (Blizzard inherited
                     // an ipcat PEER 1 range), so a known type always beats the whitelist.
                     if (asnType is "isp" or "cable" or "cdn" or "government" or
@@ -706,9 +706,9 @@ public class ProviderFinder(
             ipv4 = localPrefixes;
 
         // BGPView fallback: RIPE Stat and local data returned no IPv4 prefixes for this ASN.
-        // Throttled to ~42 req/min — only triggered for genuinely missing ASNs.
+        // The fallback is limited to about 42 requests per minute and only runs for missing ASNs.
         // Preserves any IPv6 data already returned by RIPE Stat.
-        // Known-empty ASNs (pfx0 marker) skip the throttled call within the cache TTL —
+        // Known-empty ASNs with a pfx0 marker skip the throttled call during the cache TTL.
         // otherwise ~100 serialized fallback requests add minutes to every run.
         if (ipv4.Count == 0 && _bgpView != null && !ripeClient.IsKnownEmpty(asn))
         {
@@ -716,13 +716,13 @@ public class ProviderFinder(
             ipv4 = bgpIpv4;
             if (ipv6.Count == 0) ipv6 = bgpIpv6;
 
-            if (ipv4.Count > 0) ripeClient.CachePrefixes(asn, ipv4, ipv6); // fallback hit → same pfx_ key
-            // WR-01: полный 24ч-маркер только при ПОДТВЕРЖДЁННОЙ пустоте — оба источника
-            // успешно ответили «префиксов нет». Двойной транзиентный сбой (общая сетевая
-            // деградация, двойной rate-limit) больше не помечает здоровый ASN как пустой на 24ч.
-            // Неподтверждённая пустота получает КОРОТКИЙ маркер (1ч): без него каждый
-            // прогон заново шёл в сериализованный BGPView (1.4с/ASN) — при системном
-            // отказе BGPView это минуты на КАЖДЫЙ прогон вместо одного часового окна.
+            if (ipv4.Count > 0) ripeClient.CachePrefixes(asn, ipv4, ipv6); // Fallback data uses the same pfx_ key.
+            // WR-01: the full 24h marker only on CONFIRMED emptiness, where both sources
+            // successfully answered "no prefixes". A double transient failure (general network
+            // degradation, a double rate-limit) no longer marks a healthy ASN as empty for 24h.
+            // Unconfirmed emptiness gets a SHORT marker (1h): without it every
+            // run went back to a serialized BGPView (1.4s/ASN); during a system-wide
+            // BGPView outage that is minutes on EVERY run instead of one hourly window.
             else if (ripeOk && bgpOk) ripeClient.MarkEmpty(asn);
             else                      ripeClient.MarkEmpty(asn, TimeSpan.FromHours(1));
         }
@@ -800,10 +800,10 @@ public class ProviderFinder(
     public static long CountIpsInCidr(string cidr)
         => Ipv4RangeMath.CountAddresses(cidr);
 
-    // Стабы для ASN из asnList, не давших кандидата в цикле обогащения: только те, что
-    // есть в nameFallback (имена ядра) — не-core сюда попасть не может. Префиксы добьёт
-    // localPrefixFallback в EnrichWithPrefixesAsync. Гарантирует, что core-член не теряется
-    // из-за 429/ошибки PeeringDB. Чистая функция — тестируется изолированно.
+    // Stubs for ASNs from asnList that produced no candidate in the enrichment loop: only those
+    // present in nameFallback (core names); non-core entries cannot reach here. Prefixes are filled in by
+    // localPrefixFallback in EnrichWithPrefixesAsync. Guarantees a core member is not lost
+    // due to a PeeringDB 429/error. A pure function, tested in isolation.
     public static IReadOnlyList<ProviderCandidate> BackfillNameStubs(
         IReadOnlyList<(uint Asn, int Coverage)> asnList,
         IReadOnlySet<uint> existingAsns,
@@ -817,7 +817,7 @@ public class ProviderFinder(
     }
 
     // IP-list mode: find providers for a pre-computed list of (ASN, coverageCount) pairs.
-    // Unlike FindGlobalAsync, this goes from IPs → ASNs → PeeringDB, not the other way round.
+    // Unlike FindGlobalAsync, this method resolves IPs to ASNs before querying PeeringDB.
     // When infoTypes is non-null (e.g. --type vps), only matching PeeringDB entries pass.
     // ASNs not in PeeringDB are included as fallback only when no type filter is active.
     public async Task<IReadOnlyList<ProviderCandidate>> FindByAsnListAsync(
@@ -833,13 +833,13 @@ public class ProviderFinder(
         bool aiOnly = false,
         CancellationToken ct = default)
     {
-        // CDN exclusion is absolute — remove known CDN ASNs regardless of local whitelist.
+        // CDN exclusion removes known CDN ASNs even when they appear in the local allowlist.
         if (excludeCdn && asnList.Any(a => _excl.KnownCdnAsns.Contains(a.Asn)))
             asnList = asnList.Where(a => !_excl.KnownCdnAsns.Contains(a.Asn)).ToList();
 
         bool hasTypeFilter = infoTypes is { Length: > 0 };
 
-        // When a type filter is active, pre-filter by local ASN type BEFORE touching PeeringDB.
+        // Apply the local ASN type filter before PeeringDB when a type filter is active.
         // This prevents burning the PeeringDB rate limit on ISPs that EnrichWithPrefixesAsync
         // would eliminate anyway. ISPs resolve to "isp"/"cable" and are dropped here cheaply.
         // Unknown types (null) get benefit of the doubt and proceed to PeeringDB.
@@ -871,9 +871,9 @@ public class ProviderFinder(
         }
 
         // Cap PeeringDB requests to avoid rate limiting.
-        // Trusted ASNs (from local hosting files, whitelist provided) → no cap needed.
-        // If ipapi.is filtered >30% of inputs → no cap (it did its job).
-        // Otherwise (random user IPs, no filter) → cap at 50 as safety net.
+        // Trusted ASNs from local hosting files do not need a cap.
+        // A reduction above 30 percent means the local filter already limited the input.
+        // Unfiltered user input is capped at 50 ASNs as a safety measure.
         bool ipapiFiltered = enrichList.Count < asnList.Count * 0.7;
         bool trustedAsns   = localHostingWhitelist != null;
         int peeringDbCap   = (ipapiFiltered || trustedAsns) ? enrichList.Count : 50;
@@ -993,7 +993,7 @@ public class ProviderFinder(
                 bool haveRecord = false;
 
                 // Cache-aside: the supplement ASN sets are stable across runs, so without a
-                // cache the same per-ASN /net?asn= lookups repeat every run (DoP=3 ≈ 5s for 40).
+                // cache, the same per-ASN /net?asn= lookups repeat on every run.
                 // The RAW record is cached pre-filter so per-call type/CDN filters below apply.
                 if (_ripeCache != null && _ripeCache.TryGet($"pdb_{entry.Asn}", out var cachedNet))
                 {
@@ -1021,7 +1021,7 @@ public class ProviderFinder(
 
                         if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                         {
-                            // Report only once — every parallel slot would hit 429 simultaneously.
+                            // Report the error once because parallel requests receive the same 429 response.
                             if (Interlocked.Exchange(ref rateLimitReported, 1) == 0)
                                 onError?.Invoke(
                                     "PeeringDB rate limit hit (HTTP 429) — enrichment incomplete, try again later.");
@@ -1039,7 +1039,7 @@ public class ProviderFinder(
                             candidate = ParseNetwork(arr[0], requireInfoType: false);
                         }
                         Interlocked.Increment(ref metadataLookupsCompleted);
-                        // Cache successful lookups only (found or genuinely absent) —
+                        // Cache only successful lookups, including confirmed missing records.
                         // errors/timeouts above returned early or fall to catch.
                         _ripeCache?.Set($"pdb_{entry.Asn}",
                             SerializePdbNet(candidate, foundInPeeringDb), PeeringDbCacheTtl);
@@ -1048,7 +1048,7 @@ public class ProviderFinder(
                     catch { }
                 }
 
-                // Per-call filters — applied to both fresh and cached records.
+                // Apply request filters to both fresh and cached records.
                 if (candidate != null && !MatchesMetadataFilters(candidate))
                 {
                     excludedAsns.TryAdd(entry.Asn, 0);
@@ -1056,7 +1056,7 @@ public class ProviderFinder(
                 }
 
                 // Fallback: only when PeeringDB genuinely has NO record for this ASN.
-                // Do NOT fall back when we explicitly excluded the ASN (CDN/type filter) —
+                // Do not use the fallback after a CDN or type filter explicitly excludes an ASN.
                 // that would bypass the exclusion via the RIPE Stat path (Cloudflare bug).
                 if (candidate == null && !foundInPeeringDb && !hasTypeFilter && !aiOnly)
                 {
@@ -1089,9 +1089,9 @@ public class ProviderFinder(
         {
         }
 
-        // Backfill именами из ядра: любой ASN, не давший кандидата в цикле (PeeringDB 429/ошибка/
-        // ранний return/нет записи и RIPE overview молчит), добавляем стабом с именем из ядра —
-        // префиксы добьёт localPrefixFallback в EnrichWithPrefixesAsync. Так core-член не теряется.
+        // Backfill with core names: any ASN that produced no candidate in the loop (PeeringDB 429/error/
+        // early return/no record, and RIPE overview is silent) is added as a stub with the core name.
+        // Prefixes are filled in by localPrefixFallback in EnrichWithPrefixesAsync, so a core member is not lost.
         if (!hasTypeFilter && !aiOnly)
         {
             var existingOrExcluded = new HashSet<uint>(candidates.Select(candidate => candidate.Asn));

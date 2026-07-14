@@ -4,8 +4,8 @@ using System.Net;
 
 namespace SubnetSearch.Tests;
 
-// HostingWebsiteResolver.GetWebsite: приоритет источников сайта —
-// whois → byAsn → byOrg (точное) → ManualOverrides (точное) → ManualOverrides (подстрока) → byOrg (подстрока).
+// HostingWebsiteResolver.GetWebsite checks WHOIS, ASN, exact organization, exact manual override,
+// substring manual override, and substring organization sources in that order.
 public class HostingWebsiteResolverTests
 {
     private sealed class AsyncHandler(
@@ -94,7 +94,7 @@ public class HostingWebsiteResolverTests
         => Resolver().GetWebsite(999999, "Totally Unknown Provider").Should().BeNull();
 
     [Fact]
-    public void GetWebsite_NullAsnAndOrg_ReturnsNull() // краевой случай
+    public void GetWebsite_NullAsnAndOrg_ReturnsNull()
         => Resolver().GetWebsite(null, null).Should().BeNull();
 
     [Fact]

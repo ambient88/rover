@@ -320,7 +320,7 @@ public class HostingRangeIndex : IHostingIpRangeProvider
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Cache write is best-effort — a warm run simply rebuilds. Only IO/permission failures
+            // Cache writes are best effort. A later run can rebuild after an I/O or permission failure.
             // are expected here; anything else (a real bug) is allowed to surface (ARCH-04).
         }
         finally

@@ -66,7 +66,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
 
         bool isHosting = core.IsHosting;
 
-        // Router PTR (e.g. ae2.cr6-cph1.ip4.gtt.net) → backbone infrastructure IP, not rentable hosting.
+        // A router PTR such as ae2.cr6-cph1.ip4.gtt.net identifies backbone infrastructure, not rentable hosting.
         bool routerDowngraded = false;
         if (isHosting && ClassificationRules.IsRouterPtr(ptr))
         {
@@ -75,7 +75,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
         }
 
         // PTR upgrade: if core classification missed hosting but PTR explicitly indicates
-        // a cloud/VPS instance (instance337049.*, vm-42.*) — treat as hosting.
+        // a cloud or VPS instance such as instance337049.* or vm-42.*, treat it as hosting.
         // Skip upgrade if router-downgrade already determined this is infrastructure.
         HostingType? ptrHostingType = null;
         string? ptrWebsite = null;
@@ -123,7 +123,7 @@ public class HostingClassifier : IIpClassifier, IDisposable
         {
             uint ipInt = IpConverter.IpToUint(ipAddress);
 
-            // Reputation — O(1) dictionary lookup, performed immediately.
+            // Reputation uses an immediate constant-time dictionary lookup.
             int? reputation = _reputationChecker?.Check(ipInt);
 
             // 1. Hosting ranges

@@ -5,8 +5,8 @@ using SubnetSearch.Data;
 
 namespace SubnetSearch.Classification;
 
-// Composition root: wires the classifier object graph from data files + HTTP clients. Exercised
-// end-to-end by the CLI E2E tests, not unit tests — excluded so it doesn't skew the unit metric.
+// Builds the classifier object graph from data files and HTTP clients. It is exercised
+// end to end by the CLI tests. It is excluded to keep the unit coverage metric accurate.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class ClassifierFactory
 {

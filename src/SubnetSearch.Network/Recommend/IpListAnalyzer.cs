@@ -32,12 +32,12 @@ public static class IpListAnalyzer
     // Reads text from a local file path or HTTP/HTTPS URL.
     // Automatically rewrites GitHub blob URLs to raw.githubusercontent.com.
     //
-    // Двухмаршрутная загрузка URL (зеркало стратегии AppBootstrap для data-файлов):
-    // основной клиент — bypass-VPN (привязан к физическому интерфейсу), fallbackHttp —
-    // системный маршрут (VPN, если активен). Один маршрут не покрывает оба случая:
-    // провайдер блокирует часть хостов напрямую (raw.githubusercontent.com — SYN
-    // blackhole, «The SSL connection could not be established»), а часть хостов
-    // блокирует выходные адреса VPN.
+    // Two-route URL download (mirrors the AppBootstrap strategy for data files):
+    // the primary client is bypass-VPN (bound to the physical interface), fallbackHttp is
+    // the system route (VPN if active). A single route does not cover both cases:
+    // the ISP blocks some hosts directly (raw.githubusercontent.com: a SYN
+    // blackhole, "The SSL connection could not be established"), while other hosts
+    // are blocked at the VPN exit addresses.
     public static async Task<string> ReadSourceAsync(
         string pathOrUrl, HttpClient http, CancellationToken ct = default,
         HttpClient? fallbackHttp = null)
@@ -65,8 +65,8 @@ public static class IpListAnalyzer
             {
                 return await FetchWithTimeoutAsync(http, url, ct);
             }
-            // Сетевой сбой первой попытки (включая её 20с-таймаут) → вторая попытка
-            // другим маршрутом. Отмена пользователем (Ctrl+C) не перехватывается.
+            // A network failure on the first route starts a second attempt
+            // over the other route. User cancellation (Ctrl+C) is not intercepted.
             catch (Exception ex) when (
                 fallbackHttp != null && !ct.IsCancellationRequested &&
                 ex is HttpRequestException or OperationCanceledException)
@@ -375,7 +375,7 @@ public static class IpListAnalyzer
     }
 
     // Rewrites GitHub blob URLs to raw format so we get plain text, not HTML.
-    // https://github.com/user/repo/blob/branch/file → https://raw.githubusercontent.com/user/repo/branch/file
+    // Convert GitHub blob URLs to their raw.githubusercontent.com equivalents.
     internal static string RewriteGitHubUrl(string url)
     {
         var match = Regex.Match(url,
@@ -405,25 +405,25 @@ public static class IpListAnalyzer
 
     private static bool IsPrivateOrReserved(uint ip)
     {
-        // 0.0.0.0/8 — IANA reserved "this" network
+        // 0.0.0.0/8 is the IANA reserved "this" network.
         if ((ip & 0xFF000000u) == 0x00000000u) return true;
-        // 10.0.0.0/8 — RFC 1918 private
+        // 10.0.0.0/8 is private under RFC 1918.
         if ((ip & 0xFF000000u) == 0x0A000000u) return true;
-        // 100.64.0.0/10 — CGNAT (RFC 6598)
+        // 100.64.0.0/10 is reserved for CGNAT by RFC 6598.
         if ((ip & 0xFFC00000u) == 0x64400000u) return true;
-        // 127.0.0.0/8 — loopback
+        // 127.0.0.0/8 is the loopback network.
         if ((ip & 0xFF000000u) == 0x7F000000u) return true;
-        // 169.254.0.0/16 — link-local (also AWS/GCP instance metadata endpoint)
+        // 169.254.0.0/16 is link-local and includes cloud metadata endpoints.
         if ((ip & 0xFFFF0000u) == 0xA9FE0000u) return true;
-        // 172.16.0.0/12 — RFC 1918 private
+        // 172.16.0.0/12 is private under RFC 1918.
         if ((ip & 0xFFF00000u) == 0xAC100000u) return true;
-        // 192.168.0.0/16 — RFC 1918 private
+        // 192.168.0.0/16 is private under RFC 1918.
         if ((ip & 0xFFFF0000u) == 0xC0A80000u) return true;
-        // 198.51.100.0/24 — TEST-NET-2 (RFC 5737 documentation)
+        // 198.51.100.0/24 is TEST-NET-2 for RFC 5737 documentation.
         if ((ip & 0xFFFFFF00u) == 0xC6336400u) return true;
-        // 203.0.113.0/24 — TEST-NET-3 (RFC 5737 documentation)
+        // 203.0.113.0/24 is TEST-NET-3 for RFC 5737 documentation.
         if ((ip & 0xFFFFFF00u) == 0xCB007100u) return true;
-        // 255.255.255.255 — broadcast
+        // 255.255.255.255 is the broadcast address.
         if (ip == 0xFFFFFFFFu) return true;
         return false;
     }

@@ -13,7 +13,7 @@ public class CsvLineTests
     public void Parse_QuotedFields_StripsQuotes()
         => CsvLine.Parse("\"a\",\"b\"").Should().Equal("a", "b");
 
-    // The F7 case: a comma inside a quoted provider name must stay inside one field.
+    // A comma inside a quoted provider name must stay inside one field.
     [Fact]
     public void Parse_EmbeddedComma_KeptInsideField()
     {

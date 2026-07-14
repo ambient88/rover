@@ -5,11 +5,11 @@ using SubnetSearch.Network.Recommend;
 
 namespace SubnetSearch.Network;
 
-// Physical-NIC enumeration + socket binding over the live OS network stack — integration-only.
+// Enumerates physical network interfaces and binds sockets through the live operating system network stack.
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public static class NetworkInterfaceHelper
 {
-    // Имена интерфейсов, которые считаются VPN/тунелями/виртуальными.
+    // Interface names treated as VPN/tunnel/virtual.
     private static readonly string[] VirtualPrefixes =
     [
         "tun", "tap", "wg", "ppp", "vpn", "lo",
@@ -50,20 +50,20 @@ public static class NetworkInterfaceHelper
     }
 
     /// <summary>
-    /// Возвращает имя физического сетевого интерфейса (Ethernet или Wi-Fi),
-    /// исключая VPN/tunnel/virtual адаптеры.
+    /// Returns the name of the physical network interface (Ethernet or Wi-Fi),
+    /// excluding VPN/tunnel/virtual adapters.
     /// </summary>
     public static string? GetPhysicalInterfaceName() => GetPhysical().Name;
 
     /// <summary>
-    /// Возвращает IPv4-адрес физического интерфейса для привязки сокетов.
+    /// Returns the physical interface IPv4 address for socket binding.
     /// </summary>
     public static IPAddress? GetPhysicalIpAddress() => GetPhysical().Ip;
 
     /// <summary>
-    /// Создаёт HttpClient, привязанный к физическому интерфейсу и не использующий
-    /// системный прокси — обходит VPN-маршрутизацию на уровне TCP-сокета.
-    /// Возвращает null если физический интерфейс не определён (используй обычный HttpClient).
+    /// Creates an HttpClient bound to the physical interface that does not use
+    /// the system proxy, bypassing VPN routing at the TCP-socket level.
+    /// Returns null if no physical interface is found (use a normal HttpClient).
     /// </summary>
     public static HttpClient? CreateBypassVpnHttpClient(TimeSpan? timeout = null)
     {

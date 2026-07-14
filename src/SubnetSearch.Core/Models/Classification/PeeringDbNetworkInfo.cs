@@ -3,6 +3,6 @@ namespace SubnetSearch.Core.Models.Classification;
 public record PeeringDbNetworkInfo(
     string? Website,
     string? InfoType,
-    int?    IxCount = null,   // количество точек обмена трафиком (пирингов)
-    int?    NetId   = null    // внутренний ID в PeeringDB для дополнительных запросов
+    int?    IxCount = null,   // number of traffic exchange points (peerings)
+    int?    NetId   = null    // internal PeeringDB ID for follow-up requests
 );

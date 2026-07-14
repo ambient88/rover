@@ -12,7 +12,7 @@ public static class ArgsParser
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
 
-    // Validates mode and flags BEFORE data downloads. Returns (true, null) if valid.
+    // Validate the mode and flags before downloading data. A valid request returns true without an error.
     public static (bool Valid, string? Error) Validate(string[] args)
     {
         if (args.Length == 0) return (true, null);
