@@ -86,12 +86,16 @@ public sealed class DataProvisioner
                     {
                         if (p.TotalBytes is > 0)
                         {
+                            if (t.IsIndeterminate) t.IsIndeterminate = false;
                             if (t.MaxValue != p.TotalBytes.Value) t.MaxValue = p.TotalBytes.Value;
                         }
                         else
                         {
-                            // No Content-Length: keep the ceiling ahead of the byte count so the bar
-                            // never snaps to 100% before the transfer actually finishes.
+                            // No Content-Length (bgp.tools sends chunked responses): the real total
+                            // is unknown, so pulse the bar instead of faking a nearly full one.
+                            // Keep the ceiling ahead of the byte count anyway so DownloadedColumn
+                            // shows a live byte total instead of the initial 1-byte placeholder.
+                            if (!t.IsIndeterminate) t.IsIndeterminate = true;
                             t.MaxValue = Math.Max(t.MaxValue, p.BytesDownloaded + 1);
                         }
                         t.Value = p.BytesDownloaded;
@@ -108,6 +112,7 @@ public sealed class DataProvisioner
                     // and stuck at 0%. Start it and fill the bar to the file's real on-disk size so
                     // every terminal state shows a complete bar with the correct byte total.
                     if (!t.IsStarted) t.StartTask();
+                    t.IsIndeterminate = false;
                     long size = FileSizeOnDisk(r.FileName);
                     if (size > 0) t.MaxValue = size;
 

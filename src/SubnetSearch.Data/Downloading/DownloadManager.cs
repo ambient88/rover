@@ -88,11 +88,23 @@ public class DownloadManager
 
                 // 6. A 200 response means ConditionalDownloadAsync already downloaded the content.
                 // Save the completed response directly to avoid downloading it again.
+                long conditionalBytes;
                 await using (result.Content)
+                {
+                    conditionalBytes = result.Content!.CanSeek ? result.Content.Length : 0;
                     await _storage.SaveAsync(file.FileName, result.Content!, cancellationToken);
+                }
 
                 if (!_storage.IsFileValid(file.FileName, file.MinSize))
                     return new FileDownloadResult(file.FileName, false, "File is corrupted after download.");
+
+                // Same per-file completion signal as DownloadAndSaveAsync.
+                if (conditionalBytes > 0)
+                    progress?.Report(new DownloadProgress
+                    {
+                        BytesDownloaded = conditionalBytes,
+                        TotalBytes = conditionalBytes
+                    });
 
                 _metaStore.Save(file.FileName, new FileMetadata(
                     DateTimeOffset.UtcNow, result.NewETag, result.NewLastModified));
@@ -132,8 +144,10 @@ public class DownloadManager
 
         var stream = await _downloader.DownloadAsync(
             file.Url, options, progress, ct, partPath);
+        long downloadedBytes;
         await using (stream)
         {
+            downloadedBytes = stream.CanSeek ? stream.Length : 0;
             await _storage.SaveAsync(file.FileName, stream, ct);
         }
 
@@ -143,6 +157,16 @@ public class DownloadManager
 
         if (!_storage.IsFileValid(file.FileName, file.MinSize))
             return new FileDownloadResult(file.FileName, false, "File is corrupted after download.");
+
+        // Final per-file report with the definitive size: the batch may keep running for
+        // minutes, so the progress UI needs the completion signal now, not when the whole
+        // batch returns. Chunked downloads (no Content-Length) get their total only here.
+        if (downloadedBytes > 0)
+            progress?.Report(new DownloadProgress
+            {
+                BytesDownloaded = downloadedBytes,
+                TotalBytes = downloadedBytes
+            });
 
         _metaStore.Save(file.FileName, new FileMetadata(DateTimeOffset.UtcNow));
         return new FileDownloadResult(file.FileName, true);

@@ -72,7 +72,7 @@ public class CliEndToEndTests
         var (exit, output) = RunCli("--version");
 
         exit.Should().Be(0);
-        output.Should().Contain("SubnetSearch").And.Contain("0.0.1");
+        output.Should().Contain("rover").And.Contain("0.0.1");
     }
 
     [Fact]

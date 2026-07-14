@@ -61,6 +61,6 @@ public static class HelpText
             if (plus >= 0) infoVer = infoVer[..plus];
         }
         string ver = infoVer ?? asm.GetName().Version?.ToString(3) ?? "unknown";
-        AnsiConsole.MarkupLine($"[bold]SubnetSearch[/] v{ver}");
+        AnsiConsole.MarkupLine($"[bold]rover[/] v{ver}");
     }
 }
