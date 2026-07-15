@@ -204,7 +204,7 @@ public sealed class DataProvisioner
             {
                 using (bypass)
                 {
-                    bypass.DefaultRequestHeaders.UserAgent.ParseAdd("SubnetSearch/1.0");
+                    bypass.DefaultRequestHeaders.UserAgent.ParseAdd("rover/1.0");
                     var retryManager = new DownloadManager(
                         DownloadManagerFactory.CreateDownloader(bypass), _storage, files, _meta);
                     var retryResults = await retryManager.DownloadAllDetailedAsync(

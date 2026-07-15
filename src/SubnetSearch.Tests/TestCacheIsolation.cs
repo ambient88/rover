@@ -5,7 +5,7 @@ namespace SubnetSearch.Tests;
 
 // Redirects all derived caches (hosting index, ip2asn/as.json/ipsum loaders, integrity snapshots,
 // LocalHostingAsnCache fallback) into an isolated temp directory for the whole test run, so tests
-// never write into the developer's real %LocalAppData%\SubnetSearch\cache. Runs once, before any
+// never write into the developer's real %LocalAppData%\rover\cache. Runs once, before any
 // test, via [ModuleInitializer]; the directory is removed on process exit.
 internal static class TestCacheIsolation
 {
@@ -17,7 +17,7 @@ internal static class TestCacheIsolation
             return;
 
         string dir = Path.Combine(
-            Path.GetTempPath(), "subnetsearch-test-cache", Guid.NewGuid().ToString("N"));
+            Path.GetTempPath(), "rover-test-cache", Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable(DerivedCachePath.CacheRootEnvVar, dir);
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>

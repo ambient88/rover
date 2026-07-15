@@ -21,7 +21,7 @@ public class DownloadManagerFactoryTests : IDisposable
         using var client = DownloadManagerFactory.CreateHttpClient();
 
         client.Timeout.Should().Be(TimeSpan.FromSeconds(600));
-        client.DefaultRequestHeaders.UserAgent.ToString().Should().Contain("SubnetSearch/1.0");
+        client.DefaultRequestHeaders.UserAgent.ToString().Should().Contain("rover/1.0");
     }
 
     [Fact]

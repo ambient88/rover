@@ -107,15 +107,15 @@ jobs:
       - name: Build image
         run: docker build -t rover:ci .
 
-      # Guards the F5 regression: the app reads SUBNETSEARCH_DATA_DIR, so the image must
+      # Guards the F5 regression: the app reads ROVER_DATA_DIR, so the image must
       # expose exactly that (not the old typo'd SUBNETSSEARCH_DATA_DIR) for the /data volume
       # to be used and downloaded data to survive container recreation.
       - name: Verify data-dir env var
         run: |
           envs=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' rover:ci)
           echo "$envs"
-          if ! echo "$envs" | grep -qx 'SUBNETSEARCH_DATA_DIR=/data'; then
-            echo "::error::image is missing SUBNETSEARCH_DATA_DIR=/data (F5)"; exit 1
+          if ! echo "$envs" | grep -qx 'ROVER_DATA_DIR=/data'; then
+            echo "::error::image is missing ROVER_DATA_DIR=/data (F5)"; exit 1
           fi
           if echo "$envs" | grep -q 'SUBNETSSEARCH'; then
             echo "::error::typo'd env var SUBNETSSEARCH_DATA_DIR is present (F5)"; exit 1

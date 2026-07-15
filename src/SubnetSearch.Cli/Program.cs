@@ -76,6 +76,24 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
+// Maintenance commands run before data provisioning: uninstalling or updating the
+// binary must never trigger a data download first.
+string firstMode = args.Length > 0 ? args[0].ToLowerInvariant() : "";
+if (firstMode == "self-update")
+{
+    try
+    {
+        return await SelfUpdateCommand.ExecuteAsync(cts.Token);
+    }
+    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+    {
+        AnsiConsole.MarkupLine("[yellow]Cancelled.[/]");
+        return 130;
+    }
+}
+if (firstMode == "uninstall")
+    return UninstallCommand.Execute(args);
+
 // Bootstrap data, configuration, and the PeeringDB client.
 var ctx = await AppBootstrap.InitializeAsync(args, appConfig, cts);
 if (ctx is null)
@@ -104,7 +122,26 @@ if (args.Length == 0)
 int modeIndex = ArgsParser.FindModeIndex(args);
 string mode = modeIndex >= 0 ? args[modeIndex].ToLowerInvariant() : args[0].ToLowerInvariant();
 if (mode == "update")
+{
+    // One-line nudge when a newer release exists. Fail-soft: an offline or
+    // rate-limited GitHub API (or Ctrl+C during the check) must never affect
+    // the data update's outcome.
+    try
+    {
+        if (!cts.IsCancellationRequested)
+        {
+            using var releaseHttp = new HttpClient();
+            var latest = await new SubnetSearch.Data.GitHubReleaseClient(releaseHttp)
+                .GetLatestAsync(cts.Token);
+            if (latest != null && SubnetSearch.Data.GitHubReleaseClient.IsNewer(latest.Version, HelpText.CurrentVersion))
+                AnsiConsole.MarkupLine(
+                    $"[yellow]rover v{Markup.Escape(latest.Version)} is available[/] " +
+                    $"(current: v{Markup.Escape(HelpText.CurrentVersion)}). Run [bold]rover self-update[/] to install.");
+        }
+    }
+    catch (OperationCanceledException) { }
     return 0;
+}
 
 string argument = modeIndex >= 0 && modeIndex + 1 < args.Length
     ? args[modeIndex + 1]

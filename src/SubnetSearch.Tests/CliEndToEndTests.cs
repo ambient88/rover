@@ -66,6 +66,46 @@ public class CliEndToEndTests
         return (p.ExitCode, stdout + stderr);
     }
 
+    // Variant with environment overrides and piped stdin for commands that prompt.
+    private static (int ExitCode, string Output) RunCliWithEnv(
+        IReadOnlyDictionary<string, string> env, string stdin, params string[] args)
+    {
+        var binDir = LocateCliBinDir();
+        var exe = Path.Combine(binDir, "rover.exe");
+
+        ProcessStartInfo psi;
+        if (File.Exists(exe))
+        {
+            psi = new ProcessStartInfo(exe);
+            foreach (var a in args) psi.ArgumentList.Add(a);
+        }
+        else
+        {
+            psi = new ProcessStartInfo("dotnet");
+            psi.ArgumentList.Add(Path.Combine(binDir, "rover.dll"));
+            foreach (var a in args) psi.ArgumentList.Add(a);
+        }
+        foreach (var (key, value) in env)
+            psi.Environment[key] = value;
+        psi.RedirectStandardInput  = true;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError  = true;
+        psi.UseShellExecute        = false;
+        psi.CreateNoWindow         = true;
+
+        using var p = Process.Start(psi)!;
+        p.StandardInput.Write(stdin);
+        p.StandardInput.Close();
+        string stdout = p.StandardOutput.ReadToEnd();
+        string stderr = p.StandardError.ReadToEnd();
+        if (!p.WaitForExit(30_000))
+        {
+            try { p.Kill(entireProcessTree: true); } catch { }
+            throw new TimeoutException("rover did not exit within 30s");
+        }
+        return (p.ExitCode, stdout + stderr);
+    }
+
     [Fact]
     public void Version_PrintsVersionAndExitsZero()
     {
@@ -83,6 +123,68 @@ public class CliEndToEndTests
         exit.Should().Be(0);
         output.Should().Contain("Usage").And.Contain("-r");
         output.Should().Contain("--preset", "справка перечисляет пресеты рейтинга");
+    }
+
+    [Fact]
+    public void Help_ListsMaintenanceCommands()
+    {
+        var (_, output) = RunCli("--help");
+
+        output.Should().Contain("self-update").And.Contain("uninstall");
+    }
+
+    // Sandboxes every uninstall target (data, cache, config roots) into a temp tree,
+    // so the test can safely exercise real deletion without touching the machine.
+    private static (Dictionary<string, string> Env, string DataDir, string CacheDir, string Root) UninstallSandbox()
+    {
+        string root = Directory.CreateTempSubdirectory().FullName;
+        string dataDir  = Path.Combine(root, "data");
+        string cacheDir = Path.Combine(root, "cache");
+        Directory.CreateDirectory(dataDir);
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(Path.Combine(dataDir, "marker.bin"), "x");
+        var env = new Dictionary<string, string>
+        {
+            ["ROVER_DATA_DIR"]   = dataDir,
+            ["ROVER_CACHE_DIR"]  = cacheDir,
+            // Both config locations resolve under ApplicationData; redirect it per-OS.
+            ["APPDATA"]          = Path.Combine(root, "appdata"),
+            ["XDG_CONFIG_HOME"]  = Path.Combine(root, "xdg"),
+        };
+        return (env, dataDir, cacheDir, root);
+    }
+
+    [Fact]
+    public void Uninstall_Declined_DeletesNothing()
+    {
+        var (env, dataDir, cacheDir, root) = UninstallSandbox();
+        try
+        {
+            var (exit, output) = RunCliWithEnv(env, "n\n", "uninstall");
+
+            exit.Should().Be(1);
+            output.Should().Contain("Cancelled");
+            Directory.Exists(dataDir).Should().BeTrue("declining must not delete anything");
+            Directory.Exists(cacheDir).Should().BeTrue();
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Uninstall_WithYesFlag_DeletesDataAndCache()
+    {
+        var (env, dataDir, cacheDir, root) = UninstallSandbox();
+        try
+        {
+            var (exit, output) = RunCliWithEnv(env, "", "uninstall", "--yes");
+
+            exit.Should().Be(0);
+            output.Should().Contain("Removed");
+            Directory.Exists(dataDir).Should().BeFalse();
+            Directory.Exists(cacheDir).Should().BeFalse();
+            output.Should().Contain("binary", "the command explains how to remove the binary itself");
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [Fact]

@@ -7,12 +7,35 @@ public static class ConfigManager
     private static string ConfigPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "rover", "config.json");
+
+    // Pre-rebrand location; migrated silently on first load so stored API keys survive.
+    private static string LegacyConfigPath =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "subnetSearch", "config.json");
+
+    private static void MigrateLegacyConfig()
+    {
+        try
+        {
+            if (File.Exists(ConfigPath) || !File.Exists(LegacyConfigPath)) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+            File.Move(LegacyConfigPath, ConfigPath);
+            try { Directory.Delete(Path.GetDirectoryName(LegacyConfigPath)!); }
+            catch (IOException) { } // non-empty legacy dir stays; only the file matters
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Migration is best effort; a failed move just means default config.
+        }
+    }
 
     public static AppConfig Load()
     {
         try
         {
+            MigrateLegacyConfig();
             if (!File.Exists(ConfigPath)) return new AppConfig();
             var json = File.ReadAllText(ConfigPath);
             return JsonSerializer.Deserialize<AppConfig>(json) ?? new AppConfig();

@@ -29,7 +29,7 @@ RUN chmod +x ./rover
 
 # Data files are persisted in a volume so they survive container restarts.
 # Mount a host directory: docker run -v ~/.local/share/rover/data:/data ...
-ENV SUBNETSEARCH_DATA_DIR=/data
+ENV ROVER_DATA_DIR=/data
 VOLUME ["/data"]
 
 ENTRYPOINT ["./rover"]

@@ -4,7 +4,8 @@ namespace SubnetSearch.Cli;
 
 public static class ArgsParser
 {
-    private static readonly string[] KnownModes = ["-a", "-d", "-c", "-l", "-o", "-r", "update"];
+    private static readonly string[] KnownModes =
+        ["-a", "-d", "-c", "-l", "-o", "-r", "update", "self-update", "uninstall"];
 
     public static string? GetArgValue(string[] args, string flag)
     {

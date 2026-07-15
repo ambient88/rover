@@ -8,7 +8,7 @@ public static class DefaultDataPath
     public static string GetDefaultDataDirectory()
     {
         // Docker, CI, and custom installations can override the path with an environment variable.
-        var envPath = Environment.GetEnvironmentVariable("SUBNETSEARCH_DATA_DIR");
+        var envPath = Environment.GetEnvironmentVariable("ROVER_DATA_DIR");
         if (!string.IsNullOrWhiteSpace(envPath))
             return envPath;
 
@@ -19,7 +19,7 @@ public static class DefaultDataPath
 
         // Production: user profile directory.
         var basePath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(basePath, "SubnetSearch", "data");
+        return Path.Combine(basePath, "rover", "data");
     }
 
     /// <summary>

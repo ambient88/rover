@@ -62,6 +62,27 @@ rover -d github.com
 rover -r --country DE --max-ping 50 --top 10
 ```
 
+### Updating
+
+Data files refresh automatically when their TTL expires; `rover update` forces a refresh and also tells you when a newer rover release is available.
+
+```bash
+rover update        # refresh data files, check for a new release
+rover self-update   # download and install the latest release binary
+```
+
+apt installations update through the package manager instead: `sudo apt update && sudo apt upgrade`.
+
+### Uninstall
+
+```bash
+rover uninstall     # removes downloaded data, caches, and configuration (asks first)
+```
+
+Then remove the binary itself: `sudo apt remove rover` (apt), or delete the binary (`sudo rm /usr/local/bin/rover` for install.sh setups). `rover uninstall` prints the exact path.
+
+Everything rover stores on disk lives in three places: the data directory (`~/.local/share/rover/data` on Linux, `%LocalAppData%\rover\data` on Windows), derived caches next to it (`rover/cache`), and the config with API keys (`~/.config/rover` / `%AppData%\rover`).
+
 ---
 
 ## 📖 Documentation
@@ -229,7 +250,7 @@ Stored in `~/.local/share/rover/data` (Linux/macOS) or `%APPDATA%\rover\data` (W
 
 To override the path:
 ```bash
-SUBNETSEARCH_DATA_DIR=/custom/path rover -a 1.2.3.4
+ROVER_DATA_DIR=/custom/path rover -a 1.2.3.4
 ```
 
 ---

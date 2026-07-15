@@ -21,7 +21,7 @@ public class DerivedCachePathTests
         string path = DerivedCachePath.ForDataDirectory(
             "data", "asn", overrideRoot: null, localData: @"C:\local");
 
-        path.Should().StartWith(Path.Combine(@"C:\local", "SubnetSearch", "cache"));
+        path.Should().StartWith(Path.Combine(@"C:\local", "rover", "cache"));
         path.Should().EndWith("asn");
     }
 
@@ -31,7 +31,7 @@ public class DerivedCachePathTests
         string path = DerivedCachePath.ForDataDirectory(
             "data", "asn", overrideRoot: " ", localData: "");
 
-        path.Should().StartWith(Path.Combine(Path.GetTempPath(), "SubnetSearch", "cache"));
+        path.Should().StartWith(Path.Combine(Path.GetTempPath(), "rover", "cache"));
     }
 
     [Fact]
@@ -47,7 +47,7 @@ public class DerivedCachePathTests
     [Fact]
     public void PublicOverload_ResolvesFromEnvironment()
     {
-        // The suite runs with SUBNETSEARCH_CACHE_DIR set (redirected away from
+        // The suite runs with ROVER_CACHE_DIR set (redirected away from
         // LocalApplicationData), so the public overload must land under it.
         string? root = Environment.GetEnvironmentVariable(DerivedCachePath.CacheRootEnvVar);
         string path = DerivedCachePath.ForDataDirectory("data", "asn");
@@ -55,6 +55,6 @@ public class DerivedCachePathTests
         if (!string.IsNullOrWhiteSpace(root))
             path.Should().StartWith(root);
         else
-            path.Should().Contain(Path.Combine("SubnetSearch", "cache"));
+            path.Should().Contain(Path.Combine("rover", "cache"));
     }
 }

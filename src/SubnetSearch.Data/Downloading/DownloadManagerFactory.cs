@@ -9,7 +9,7 @@ public static class DownloadManagerFactory
     // The service rejects default user agents. See https://bgp.tools/kb/api.
     // The same UA is sent to all download hosts.
     public const string UserAgent =
-        "SubnetSearch/1.0 (github.com/ambient88/rover; contact: thriilerchiller123@gmail.com)";
+        "rover/1.0 (github.com/ambient88/rover; contact: thriilerchiller123@gmail.com)";
 
     public static HttpClient CreateHttpClient(DownloadOptions? options = null)
     {

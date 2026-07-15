@@ -7,7 +7,7 @@ public static class DerivedCachePath
 {
     // Optional override for the derived-cache root. Lets CI and the test suite redirect caches
     // away from the user's LocalApplicationData (which tests would otherwise pollute).
-    public const string CacheRootEnvVar = "SUBNETSEARCH_CACHE_DIR";
+    public const string CacheRootEnvVar = "ROVER_CACHE_DIR";
 
     public static string ForDataDirectory(string dataDirectory, string category)
         => ForDataDirectory(
@@ -33,7 +33,7 @@ public static class DerivedCachePath
         {
             if (string.IsNullOrWhiteSpace(localData))
                 localData = Path.GetTempPath();
-            root = Path.Combine(localData, "SubnetSearch", "cache");
+            root = Path.Combine(localData, "rover", "cache");
         }
 
         return Path.Combine(root, hash, category);
