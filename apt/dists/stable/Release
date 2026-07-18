@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sat, 18 Jul 2026 21:11:37 +0000
+Label: rover
+Origin: rover
+Suite: stable
+MD5Sum:
+ 29a9a1ca484c80cf83c62e6963ada44f              134 Release
+ 89b119d77af35797b7d692c62e2162ef              887 main/binary-amd64/Packages
+ 8c4340acc25a3b13e97eb681e2acb779              599 main/binary-amd64/Packages.gz
+SHA1:
+ 5a0e4f19c3453850f3ffe58d80d8ed698df4577d              134 Release
+ b1ab56d3b074b689b535f3773338a22332f9215f              887 main/binary-amd64/Packages
+ cc2d8e137e89820822f2559e9780721242a7c8af              599 main/binary-amd64/Packages.gz
+SHA256:
+ f2424cfc21e8d98f27b5debb90ac4605563a459bf631d013aeb6dfa5c31f2b8f              134 Release
+ 19147e51782618bed6a4f119ed4491b4fadb531666ac0c9c116bce6395852c83              887 main/binary-amd64/Packages
+ dddd200f0f09461f15ed9b5fdee62f4df21816cb6f6c4db7b14104490ac9dabe              599 main/binary-amd64/Packages.gz
+SHA512:
+ 3c7cf73bf0936a87df8b83cac2d1d10591053489f3615d324578958f650a53d96fdad99c34c5d51e5f6158d03c4a04341c5a22e2866f0ef02362ed4b7eb0b1b2              134 Release
+ a3e5aac6a53636a76efa9d1eec467bc6580cb1029f5d2a3a1fec4dd5c06b8ba08fa11b6ebe7983508d34b690cf67cb93df40af0a7d8f80232c98d54a9f66f151              887 main/binary-amd64/Packages
+ e32ccf9b931bbbb0ede174937b63eaf65ff213968cd3132a2e33f21fc0b97479872b43f0f254b6f70c3eb8deb2deaa338ea5d651bc5fcdd1076aa6506c9d9658              599 main/binary-amd64/Packages.gz

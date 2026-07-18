@@ -1,0 +1,19 @@
+Package: rover
+Architecture: amd64
+Version: 0.0.1
+Maintainer: ambient88 <thriilerchiller123@gmail.com>
+Depends: traceroute, iputils-ping, ca-certificates
+Filename: pool/main/rover_0.0.1_amd64.deb
+Size: 29548432
+MD5sum: 8dafab0ec12e8d4a71f71ac071c82375
+SHA1: e0200cb38cf1d82c5ef34fe0b8da3f67f09f61c4
+SHA256: bf70b0b6fc8aea29d4b971590f19a5f6f7e6bdbbf1a2b4315c1e54be375fdd7e
+SHA512: 973d0517af1794ca8743671f421a88244c6f9df4398d0f97b5b5daaf29957f89a9ab6fa2dd4941ec8b8f874303434726b1a06a59a72797e01ddaffa3a7c81542
+Homepage: https://github.com/ambient88/rover
+Description: IP address and subnet classification tool
+ Rover classifies IP addresses, domains and CIDR ranges to identify
+ hosting providers, geolocation, reputation, and network diagnostics.
+ .
+ Features: hosting detection, ASN lookup, geolocation, ping, traceroute,
+ port scanning, provider scanning via RIPE Stat and PeeringDB.
+
